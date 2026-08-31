@@ -2,7 +2,8 @@
 #include <WebServer.h>
 
 // =====================================================
-// KOKCHI - Rotation Assistance Web Prototype v2
+// KOKCHI - Integrated Web HMI Prototype v3
+// Rotation + Injection Session + Result / History
 // =====================================================
 
 const char* AP_SSID = "InjectCoach-Test";
@@ -18,32 +19,44 @@ const char PAGE[] PROGMEM = R"rawliteral(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <title>KOKCHI Rotation Assistance</title>
+  <title>KOKCHI 자가주사 수행 보조 시스템</title>
 
   <style>
     * {
       box-sizing: border-box;
     }
 
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #20242a;
+      --muted: #747d87;
+      --line: #dce1e6;
+      --soft: #f5f7f9;
+      --dark: #20242a;
+      --recent: #d7dce2;
+      --history: #edf0f3;
+      --warning-bg: #f3ece7;
+      --warning-line: #9a6747;
+      --ok-bg: #edf3ef;
+      --ok-line: #617b69;
+    }
+
     body {
       margin: 0;
       font-family: Arial, "Noto Sans KR", sans-serif;
-      background: #f4f6f8;
-      color: #20242a;
+      background: var(--bg);
+      color: var(--text);
     }
 
     .container {
       width: min(920px, 92%);
       margin: 0 auto;
-      padding: 28px 0 60px;
+      padding: 26px 0 60px;
     }
 
-    /* =========================
-       Header
-       ========================= */
-
     .header {
-      margin-bottom: 22px;
+      margin-bottom: 18px;
     }
 
     .brand {
@@ -54,7 +67,7 @@ const char PAGE[] PROGMEM = R"rawliteral(
 
     .subtitle {
       margin-top: 5px;
-      color: #6f7781;
+      color: var(--muted);
       font-size: 14px;
     }
 
@@ -81,11 +94,84 @@ const char PAGE[] PROGMEM = R"rawliteral(
     }
 
     /* =========================
-       Common card
+       Stepper
+       ========================= */
+
+    .stepper {
+      background: white;
+      border-radius: 18px;
+      padding: 18px 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 5px 20px rgba(0,0,0,0.05);
+    }
+
+    .stepper-row {
+      display: grid;
+      grid-template-columns: 1fr 42px 1fr 42px 1fr;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .step-node {
+      text-align: center;
+      min-width: 0;
+    }
+
+    .step-circle {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 2px solid #cfd5db;
+      background: white;
+      color: #8d959e;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 7px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .step-title {
+      font-size: 12px;
+      color: #8a929b;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .step-line {
+      height: 2px;
+      background: #dce1e6;
+      margin-top: -19px;
+    }
+
+    .step-node.active .step-circle {
+      background: var(--dark);
+      color: white;
+      border-color: var(--dark);
+    }
+
+    .step-node.active .step-title {
+      color: var(--dark);
+      font-weight: 800;
+    }
+
+    .step-node.done .step-circle {
+      background: #e8ecef;
+      color: var(--dark);
+      border-color: #aeb6bf;
+    }
+
+    .step-line.done {
+      background: #aeb6bf;
+    }
+
+    /* =========================
+       Common
        ========================= */
 
     .card {
-      background: white;
+      background: var(--card);
       border-radius: 18px;
       padding: 22px;
       margin-bottom: 16px;
@@ -100,25 +186,29 @@ const char PAGE[] PROGMEM = R"rawliteral(
     }
 
     .card-title {
-      font-size: 17px;
+      font-size: 19px;
       font-weight: 800;
       margin-bottom: 7px;
     }
 
     .card-desc {
       font-size: 13px;
-      color: #777f89;
-      line-height: 1.55;
+      color: var(--muted);
+      line-height: 1.6;
       margin-bottom: 18px;
     }
 
-    /* =========================
-       State
-       ========================= */
+    .step-panel {
+      display: none;
+    }
+
+    .step-panel.visible {
+      display: block;
+    }
 
     .state-box {
       padding: 15px 16px;
-      background: #f5f6f8;
+      background: var(--soft);
       border-radius: 14px;
       margin-bottom: 16px;
     }
@@ -133,17 +223,6 @@ const char PAGE[] PROGMEM = R"rawliteral(
     .state-value {
       font-size: 22px;
       font-weight: 800;
-    }
-
-    /* =========================
-       Region selector
-       ========================= */
-
-    .region-buttons {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 9px;
-      margin-bottom: 20px;
     }
 
     button {
@@ -162,14 +241,44 @@ const char PAGE[] PROGMEM = R"rawliteral(
     }
 
     button.selected {
-      background: #20242a;
-      border-color: #20242a;
+      background: var(--dark);
+      border-color: var(--dark);
       color: white;
     }
 
+    .action-button {
+      width: 100%;
+      margin-top: 16px;
+      background: var(--dark);
+      color: white;
+      border-color: var(--dark);
+      font-weight: 700;
+      padding: 14px;
+    }
+
+    .action-button.secondary {
+      background: white;
+      color: var(--dark);
+      border-color: #cfd5db;
+    }
+
+    .action-button:disabled {
+      background: #c8cdd3;
+      border-color: #c8cdd3;
+      color: white;
+      cursor: default;
+    }
+
     /* =========================
-       Rotation map
+       STEP 1
        ========================= */
+
+    .region-buttons {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 9px;
+      margin-bottom: 20px;
+    }
 
     .map-title-row {
       display: flex;
@@ -198,56 +307,68 @@ const char PAGE[] PROGMEM = R"rawliteral(
 
     .site-cell {
       position: relative;
-      min-height: 70px;
-      border: 1px solid #dce0e5;
+      min-height: 82px;
+      border: 1px solid var(--line);
       border-radius: 14px;
       background: white;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
+      gap: 5px;
       font-weight: 800;
       cursor: pointer;
       transition: 0.15s;
+      overflow: hidden;
     }
 
-    .site-cell:hover {
-      border-color: #aeb5be;
+    .site-cell.recent {
+      background: var(--recent);
+    }
+
+    .site-cell.history {
+      background: var(--history);
     }
 
     .site-cell.selected {
-      border: 2px solid #20242a;
-      box-shadow: inset 0 0 0 2px white;
+      border: 3px solid var(--dark);
+      background: white;
     }
 
-    .site-cell.recent-1 {
-      background: #d9dde2;
+    .site-number {
+      font-size: 18px;
     }
 
-    .site-cell.recent-2 {
-      background: #e6e9ed;
+    .cell-badges {
+      min-height: 17px;
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+      flex-wrap: wrap;
     }
 
-    .site-cell.recent-3 {
-      background: #f0f2f4;
-    }
-
-    .site-cell.selected::after {
-      content: "SELECTED";
-      position: absolute;
-      bottom: 5px;
+    .cell-badge {
       font-size: 8px;
-      letter-spacing: 0.7px;
-      color: #5d646d;
+      line-height: 1;
+      padding: 4px 6px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.82);
+      border: 1px solid rgba(70,75,82,0.18);
+      color: #59616a;
+      letter-spacing: 0.4px;
+      font-weight: 800;
     }
 
-    /* =========================
-       Legend
-       ========================= */
+    .cell-badge.selected-badge {
+      background: var(--dark);
+      color: white;
+      border-color: var(--dark);
+    }
 
     .legend {
       display: flex;
       flex-wrap: wrap;
-      gap: 13px;
+      gap: 12px;
       margin-bottom: 18px;
     }
 
@@ -267,27 +388,34 @@ const char PAGE[] PROGMEM = R"rawliteral(
       background: white;
     }
 
-    .legend-dot.most-recent {
-      background: #d9dde2;
+    .legend-dot.recent-dot {
+      background: var(--recent);
     }
 
-    .legend-dot.previous {
-      background: #e6e9ed;
+    .legend-dot.history-dot {
+      background: var(--history);
     }
 
     .legend-dot.selected-dot {
       background: white;
-      border: 2px solid #20242a;
+      border: 2px solid var(--dark);
     }
-
-    /* =========================
-       Rotation check
-       ========================= */
 
     .rotation-check {
       border-radius: 14px;
       padding: 16px;
-      background: #f5f6f8;
+      background: var(--soft);
+      border-left: 4px solid transparent;
+    }
+
+    .rotation-check.warning {
+      background: var(--warning-bg);
+      border-left-color: var(--warning-line);
+    }
+
+    .rotation-check.ok {
+      background: var(--ok-bg);
+      border-left-color: var(--ok-line);
     }
 
     .check-title {
@@ -298,22 +426,13 @@ const char PAGE[] PROGMEM = R"rawliteral(
     .check-message {
       font-size: 13px;
       color: #666f79;
-      line-height: 1.5;
+      line-height: 1.55;
     }
-
-    .warning {
-      background: #f1f1f1;
-      border-left: 4px solid #5c626a;
-    }
-
-    /* =========================
-       Current selection
-       ========================= */
 
     .current-site {
-      font-size: 23px;
+      font-size: 22px;
       font-weight: 800;
-      margin-bottom: 5px;
+      margin: 16px 0 5px;
     }
 
     .current-note {
@@ -322,36 +441,141 @@ const char PAGE[] PROGMEM = R"rawliteral(
       line-height: 1.5;
     }
 
-    .action-button {
-      width: 100%;
-      margin-top: 16px;
-      background: #20242a;
-      color: white;
-      border-color: #20242a;
-      font-weight: 700;
-      padding: 14px;
+    /* =========================
+       STEP 2
+       ========================= */
+
+    .session-site {
+      padding: 14px 15px;
+      border-radius: 14px;
+      background: var(--soft);
+      margin-bottom: 14px;
     }
 
-    .action-button:disabled {
-      background: #c8cdd3;
-      border-color: #c8cdd3;
-      cursor: default;
+    .session-site-label {
+      font-size: 11px;
+      color: #818a94;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .session-site-value {
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .sensor-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .sensor-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 96px;
+    }
+
+    .sensor-label {
+      font-size: 11px;
+      color: #858d97;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .sensor-value {
+      font-size: 17px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .sensor-sub {
+      font-size: 10px;
+      color: #9299a2;
+      line-height: 1.4;
+    }
+
+    .demo-note {
+      margin-top: 14px;
+      padding: 12px 13px;
+      border-radius: 12px;
+      background: #f7f7f8;
+      color: #858d97;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    .button-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .button-row .action-button {
+      margin-top: 0;
     }
 
     /* =========================
-       Confirm
+       STEP 3
        ========================= */
 
-    .confirmation {
-      display: none;
-      margin-top: 16px;
-      border: 1px solid #dce0e5;
-      border-radius: 14px;
-      padding: 16px;
+    .result-banner {
+      padding: 18px;
+      border-radius: 15px;
+      background: var(--soft);
+      margin-bottom: 14px;
     }
 
-    .confirmation.visible {
-      display: block;
+    .result-kicker {
+      font-size: 11px;
+      color: #818a94;
+      font-weight: 800;
+      margin-bottom: 5px;
+    }
+
+    .result-title {
+      font-size: 23px;
+      font-weight: 800;
+    }
+
+    .result-table {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+
+    .result-row {
+      display: grid;
+      grid-template-columns: 105px 1fr;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #edf0f2;
+      font-size: 13px;
+    }
+
+    .result-row:last-child {
+      border-bottom: none;
+    }
+
+    .result-label {
+      color: #7b848e;
+      font-weight: 700;
+    }
+
+    .result-value {
+      font-weight: 800;
+    }
+
+    .confirmation {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-top: 14px;
     }
 
     .confirm-site {
@@ -367,9 +591,22 @@ const char PAGE[] PROGMEM = R"rawliteral(
     }
 
     .confirm-button {
-      background: #20242a;
+      background: var(--dark);
       color: white;
-      border-color: #20242a;
+      border-color: var(--dark);
+    }
+
+    .recorded-box {
+      display: none;
+      padding: 16px;
+      border-radius: 14px;
+      background: var(--ok-bg);
+      border-left: 4px solid var(--ok-line);
+      margin-top: 14px;
+    }
+
+    .recorded-box.visible {
+      display: block;
     }
 
     /* =========================
@@ -380,7 +617,7 @@ const char PAGE[] PROGMEM = R"rawliteral(
       font-size: 13px;
       color: #858d97;
       padding: 13px;
-      background: #f5f6f8;
+      background: var(--soft);
       border-radius: 12px;
     }
 
@@ -411,14 +648,19 @@ const char PAGE[] PROGMEM = R"rawliteral(
       font-weight: 700;
     }
 
-    .history-status {
+    .history-meta {
+      margin-top: 3px;
       font-size: 10px;
-      color: #8c949d;
+      color: #9198a0;
+      line-height: 1.35;
     }
 
-    /* =========================
-       Footer note
-       ========================= */
+    .history-status {
+      font-size: 9px;
+      color: #727a83;
+      font-weight: 800;
+      text-align: right;
+    }
 
     .prototype-note {
       margin-top: 10px;
@@ -428,10 +670,9 @@ const char PAGE[] PROGMEM = R"rawliteral(
     }
 
     @media (max-width: 600px) {
-
       .container {
         width: 92%;
-        padding-top: 24px;
+        padding-top: 22px;
       }
 
       .brand {
@@ -442,8 +683,24 @@ const char PAGE[] PROGMEM = R"rawliteral(
         padding: 19px;
       }
 
-      .region-buttons {
+      .stepper {
+        padding: 16px 10px;
+      }
+
+      .stepper-row {
+        grid-template-columns: 1fr 26px 1fr 26px 1fr;
+      }
+
+      .step-title {
+        font-size: 11px;
+      }
+
+      .sensor-grid {
         grid-template-columns: 1fr 1fr;
+      }
+
+      .result-row {
+        grid-template-columns: 86px 1fr;
       }
     }
   </style>
@@ -454,268 +711,341 @@ const char PAGE[] PROGMEM = R"rawliteral(
 
 <div class="container">
 
-  <!-- =========================================
-       Header
-       ========================================= -->
-
+  <!-- Header -->
   <div class="header">
-
     <div class="brand">KOKCHI</div>
-
-    <div class="subtitle">
-      Embedded Self-Injection Support Prototype
-    </div>
+    <div class="subtitle">자가주사 수행 보조 시스템 · Functional Embedded Prototype</div>
 
     <div class="profile-row">
-      <span class="profile-label">DEVICE / PROTOCOL PROFILE</span>
-      <span class="profile-chip">Demo Profile</span>
+      <span class="profile-label">현재 사용 모드</span>
+      <span class="profile-chip">데모 프로필</span>
+    </div>
+  </div>
+
+
+  <!-- Stepper -->
+  <div class="stepper">
+    <div class="stepper-row">
+
+      <div class="step-node active" id="stepNode1">
+        <div class="step-circle" id="stepCircle1">1</div>
+        <div class="step-title">위치 선택</div>
+      </div>
+
+      <div class="step-line" id="stepLine1"></div>
+
+      <div class="step-node" id="stepNode2">
+        <div class="step-circle" id="stepCircle2">2</div>
+        <div class="step-title">주사 수행</div>
+      </div>
+
+      <div class="step-line" id="stepLine2"></div>
+
+      <div class="step-node" id="stepNode3">
+        <div class="step-circle" id="stepCircle3">3</div>
+        <div class="step-title">결과 / 기록</div>
+      </div>
+
+    </div>
+  </div>
+
+
+  <!-- =====================================================
+       STEP 1
+       ===================================================== -->
+
+  <div class="step-panel visible" id="step1Panel">
+
+    <div class="card">
+      <div class="section-number">STEP 01</div>
+      <div class="card-title">주사 위치 로테이션</div>
+      <div class="card-desc">
+        데모 프로필에서 사용할 주사 부위와 상대적 세부 위치를 선택합니다.
+        선택한 위치는 최근 확인 이력과 비교되며, 세션 완료 후 사용자가 확인한 경우에만 기록됩니다.
+      </div>
+
+      <div class="map-title-row">
+        <div class="map-region-name">주사 부위 선택</div>
+        <div class="map-guide">Allowed regions · Demo Profile</div>
+      </div>
+
+      <div class="region-buttons">
+        <button data-region-key="abdomen" onclick="selectRegion(this, 'abdomen')">복부</button>
+        <button data-region-key="leftThigh" onclick="selectRegion(this, 'leftThigh')">왼쪽 허벅지</button>
+        <button data-region-key="rightThigh" onclick="selectRegion(this, 'rightThigh')">오른쪽 허벅지</button>
+        <button data-region-key="upperArm" onclick="selectRegion(this, 'upperArm')">위팔</button>
+      </div>
+
+      <div class="map-title-row">
+        <div class="map-region-name" id="mapRegionName">부위를 먼저 선택해주세요</div>
+        <div class="map-guide">상대적 세부 위치</div>
+      </div>
+
+      <div class="rotation-map" id="rotationMap">
+        <div class="site-cell" data-index="1" onclick="selectSubRegion(1)">
+          <div class="site-number">1</div>
+          <div class="cell-badges"></div>
+        </div>
+
+        <div class="site-cell" data-index="2" onclick="selectSubRegion(2)">
+          <div class="site-number">2</div>
+          <div class="cell-badges"></div>
+        </div>
+
+        <div class="site-cell" data-index="3" onclick="selectSubRegion(3)">
+          <div class="site-number">3</div>
+          <div class="cell-badges"></div>
+        </div>
+
+        <div class="site-cell" data-index="4" onclick="selectSubRegion(4)">
+          <div class="site-number">4</div>
+          <div class="cell-badges"></div>
+        </div>
+
+        <div class="site-cell" data-index="5" onclick="selectSubRegion(5)">
+          <div class="site-number">5</div>
+          <div class="cell-badges"></div>
+        </div>
+
+        <div class="site-cell" data-index="6" onclick="selectSubRegion(6)">
+          <div class="site-number">6</div>
+          <div class="cell-badges"></div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <div class="legend-item">
+          <span class="legend-dot"></span>
+          사용 가능
+        </div>
+
+        <div class="legend-item">
+          <span class="legend-dot recent-dot"></span>
+          가장 최근
+        </div>
+
+        <div class="legend-item">
+          <span class="legend-dot history-dot"></span>
+          최근 이력
+        </div>
+
+        <div class="legend-item">
+          <span class="legend-dot selected-dot"></span>
+          현재 선택
+        </div>
+      </div>
+
+      <div class="rotation-check" id="rotationCheck">
+        <div class="check-title">최근 사용 위치 확인</div>
+        <div class="check-message" id="rotationMessage">
+          위치를 선택하면 최근 확인된 이력과 비교합니다.
+        </div>
+      </div>
+
+      <div class="current-site" id="currentSite">선택된 위치 없음</div>
+
+      <div class="current-note">
+        현재 선택은 아직 사용 이력에 저장되지 않습니다.
+      </div>
+
+      <button class="action-button" id="startSessionButton" onclick="startInjectionSession()" disabled>
+        이 위치로 시작
+      </button>
+    </div>
+
+
+    <div class="card">
+      <div class="section-number">RECENT HISTORY</div>
+      <div class="card-title">최근 주사 위치 기록</div>
+      <div class="card-desc">
+        확인된 세션만 표시됩니다. 최근 기록은 다음 위치 선택 시 Rotation Check에 사용됩니다.
+      </div>
+
+      <div id="historyContainerStep1">
+        <div class="history-empty">아직 확인된 기록이 없습니다.</div>
+      </div>
     </div>
 
   </div>
 
 
-  <!-- =========================================
-       Current state
-       ========================================= -->
+  <!-- =====================================================
+       STEP 2
+       ===================================================== -->
 
-  <div class="card">
+  <div class="step-panel" id="step2Panel">
 
-    <div class="section-number">CURRENT SESSION</div>
-
-    <div class="state-box">
-      <div class="state-label">CURRENT STATE</div>
-      <div class="state-value" id="state">
-        IDLE
-      </div>
-    </div>
-
-    <div class="current-site" id="currentSite">
-      No site selected
-    </div>
-
-    <div class="current-note">
-      선택한 위치는 아직 사용 이력에 저장되지 않습니다.
-      실제 세션 완료 후 확인된 위치만 기록됩니다.
-    </div>
-
-  </div>
-
-
-  <!-- =========================================
-       Rotation Assistance
-       ========================================= -->
-
-  <div class="card">
-
-    <div class="section-number">01</div>
-
-    <div class="card-title">
-      Rotation Assistance
-    </div>
-
-    <div class="card-desc">
-      주사 영역과 세부 위치를 선택하고 최근 사용 이력을 확인합니다.
-      현재 프로토타입은 실제 피부 좌표를 자동 측정하지 않으며,
-      region / sub-region 수준의 이력 관리를 지원합니다.
-    </div>
-
-
-    <!-- Region -->
-
-    <div class="map-title-row">
-      <div class="map-region-name">
-        Injection Region
-      </div>
-    </div>
-
-    <div class="region-buttons">
-
-      <button onclick="selectRegion(this, 'Abdomen')">
-        Abdomen
-      </button>
-
-      <button onclick="selectRegion(this, 'Left Thigh')">
-        Left Thigh
-      </button>
-
-      <button onclick="selectRegion(this, 'Right Thigh')">
-        Right Thigh
-      </button>
-
-      <button onclick="selectRegion(this, 'Upper Arm')">
-        Upper Arm
-      </button>
-
-    </div>
-
-
-    <!-- Sub-region map -->
-
-    <div class="map-title-row">
-
-      <div class="map-region-name" id="mapRegionName">
-        Select a region
+    <div class="card">
+      <div class="section-number">STEP 02</div>
+      <div class="card-title">주사 수행</div>
+      <div class="card-desc">
+        실제 통합 단계에서는 ESP32가 센서 입력을 읽고 현재 수행 상태를 판단합니다.
+        이 Web v3에서는 최종 화면 구조를 먼저 완성하고, 이후 실제 센서값과 State Machine을 연결합니다.
       </div>
 
-      <div class="map-guide">
-        Relative sub-regions
+      <div class="session-site">
+        <div class="session-site-label">현재 선택 위치</div>
+        <div class="session-site-value" id="sessionSite">-</div>
       </div>
 
-    </div>
-
-
-    <div class="rotation-map" id="rotationMap">
-
-      <div class="site-cell" data-index="1"
-           onclick="selectSubRegion(1)">
-        1
+      <div class="state-box">
+        <div class="state-label">현재 단계</div>
+        <div class="state-value" id="sessionState">READY</div>
       </div>
 
-      <div class="site-cell" data-index="2"
-           onclick="selectSubRegion(2)">
-        2
+      <div class="sensor-grid">
+
+        <div class="sensor-card">
+          <div class="sensor-label">PAD 접촉</div>
+          <div class="sensor-value" id="padValue">대기</div>
+          <div class="sensor-sub">FSR-PAD · GPIO32</div>
+        </div>
+
+        <div class="sensor-card">
+          <div class="sensor-label">PEN 접촉</div>
+          <div class="sensor-value" id="penValue">대기</div>
+          <div class="sensor-sub">FSR-PEN · GPIO34</div>
+        </div>
+
+        <div class="sensor-card">
+          <div class="sensor-label">펜 자세</div>
+          <div class="sensor-value" id="orientationValue">대기</div>
+          <div class="sensor-sub">MPU6050 · Roll / Pitch</div>
+        </div>
+
+        <div class="sensor-card">
+          <div class="sensor-label">플런저</div>
+          <div class="sensor-value" id="plungerValue">대기</div>
+          <div class="sensor-sub">Tact Button · GPIO27</div>
+        </div>
+
+        <div class="sensor-card">
+          <div class="sensor-label">유지 시간</div>
+          <div class="sensor-value" id="holdValue">0.0 s</div>
+          <div class="sensor-sub">State Machine timer</div>
+        </div>
+
+        <div class="sensor-card">
+          <div class="sensor-label">Rotation</div>
+          <div class="sensor-value" id="rotationValue">확인 완료</div>
+          <div class="sensor-sub">최근 확인 이력 비교</div>
+        </div>
+
       </div>
 
-      <div class="site-cell" data-index="3"
-           onclick="selectSubRegion(3)">
-        3
+      <div class="demo-note">
+        ※ 현재 버튼은 Web v3의 단계 전환과 결과 확인 흐름을 검증하기 위한 임시 기능입니다.
+        최종 통합에서는 실제 ESP32 State Machine의 정상 완료 이벤트가 STEP 3 전환을 수행합니다.
       </div>
 
-      <div class="site-cell" data-index="4"
-           onclick="selectSubRegion(4)">
-        4
-      </div>
-
-      <div class="site-cell" data-index="5"
-           onclick="selectSubRegion(5)">
-        5
-      </div>
-
-      <div class="site-cell" data-index="6"
-           onclick="selectSubRegion(6)">
-        6
-      </div>
-
-    </div>
-
-
-    <!-- Legend -->
-
-    <div class="legend">
-
-      <div class="legend-item">
-        <span class="legend-dot"></span>
-        Available
-      </div>
-
-      <div class="legend-item">
-        <span class="legend-dot most-recent"></span>
-        Most recent
-      </div>
-
-      <div class="legend-item">
-        <span class="legend-dot previous"></span>
-        Previous
-      </div>
-
-      <div class="legend-item">
-        <span class="legend-dot selected-dot"></span>
-        Selected
-      </div>
-
-    </div>
-
-
-    <!-- Rotation Check -->
-
-    <div class="rotation-check" id="rotationCheck">
-
-      <div class="check-title">
-        Rotation Check
-      </div>
-
-      <div class="check-message" id="rotationMessage">
-        위치를 선택하면 최근 사용 이력과 비교합니다.
-      </div>
-
-    </div>
-
-
-    <!-- Demo session button -->
-
-    <button
-      class="action-button"
-      id="completeButton"
-      onclick="completeDemoSession()"
-      disabled>
-
-      Complete Demo Session
-
-    </button>
-
-
-    <!-- Confirmation -->
-
-    <div class="confirmation" id="confirmation">
-
-      <div class="check-title">
-        Confirm Injection Site
-      </div>
-
-      <div class="check-message">
-        실제 수행한 위치가 아래 선택과 일치하는지 확인해주세요.
-      </div>
-
-      <div class="confirm-site" id="confirmSite">
-        -
-      </div>
-
-      <div class="confirm-buttons">
-
-        <button
-          class="confirm-button"
-          onclick="confirmSite()">
-          Confirm
+      <div class="button-row">
+        <button class="action-button secondary" onclick="backToSiteSelection()">
+          위치 다시 선택
         </button>
 
-        <button onclick="correctSite()">
-          Correct Site
+        <button class="action-button" onclick="completeDemoInjection()">
+          시연용 세션 완료
         </button>
-
       </div>
 
-    </div>
-
-    <div class="prototype-note">
-      ※ Complete Demo Session은 Rotation UI 검증을 위한 임시 버튼입니다.
-      최종 버전에서는 ESP32 State Machine의 정상 완료 이벤트로 대체합니다.
     </div>
 
   </div>
 
 
-  <!-- =========================================
-       Confirmed history
-       ========================================= -->
+  <!-- =====================================================
+       STEP 3
+       ===================================================== -->
 
-  <div class="card">
+  <div class="step-panel" id="step3Panel">
 
-    <div class="section-number">02</div>
+    <div class="card">
+      <div class="section-number">STEP 03</div>
+      <div class="card-title">결과 및 기록</div>
 
-    <div class="card-title">
-      Confirmed Site History
-    </div>
-
-    <div class="card-desc">
-      실제 세션 완료 후 확인된 위치만 최근 이력에 저장합니다.
-    </div>
-
-    <div id="historyContainer">
-
-      <div class="history-empty">
-        No confirmed history
+      <div class="result-banner">
+        <div class="result-kicker">SESSION RESULT</div>
+        <div class="result-title" id="resultTitle">세션 완료</div>
       </div>
 
+      <div class="result-table">
+
+        <div class="result-row">
+          <div class="result-label">위치</div>
+          <div class="result-value" id="resultSite">-</div>
+        </div>
+
+        <div class="result-row">
+          <div class="result-label">Rotation</div>
+          <div class="result-value" id="resultRotation">-</div>
+        </div>
+
+        <div class="result-row">
+          <div class="result-label">접촉</div>
+          <div class="result-value">센서 통합 후 표시</div>
+        </div>
+
+        <div class="result-row">
+          <div class="result-label">펜 자세</div>
+          <div class="result-value">센서 통합 후 표시</div>
+        </div>
+
+        <div class="result-row">
+          <div class="result-label">Hold</div>
+          <div class="result-value">센서 통합 후 표시</div>
+        </div>
+
+      </div>
+
+      <div class="confirmation" id="confirmation">
+        <div class="check-title">실제 수행 위치 확인</div>
+
+        <div class="check-message">
+          실제 수행한 위치가 아래 선택과 일치합니까?
+          확인한 경우에만 주사 위치 기록에 저장됩니다.
+        </div>
+
+        <div class="confirm-site" id="confirmSite">-</div>
+
+        <div class="confirm-buttons">
+          <button class="confirm-button" onclick="confirmSite()">
+            이 위치로 기록
+          </button>
+
+          <button onclick="correctSite()">
+            위치 수정
+          </button>
+        </div>
+      </div>
+
+      <div class="recorded-box" id="recordedBox">
+        <div class="check-title">기록 완료</div>
+        <div class="check-message">
+          확인된 위치가 주사 위치 기록에 저장되었습니다.
+        </div>
+      </div>
+
+      <button class="action-button" id="newSessionButton" onclick="startNewSession()" style="display:none;">
+        새 세션 시작
+      </button>
+    </div>
+
+
+    <div class="card">
+      <div class="section-number">CONFIRMED HISTORY</div>
+      <div class="card-title">주사 위치 기록</div>
+      <div class="card-desc">
+        사용자가 세션 완료 후 확인한 위치만 저장합니다.
+      </div>
+
+      <div id="historyContainerStep3">
+        <div class="history-empty">아직 확인된 기록이 없습니다.</div>
+      </div>
+
+      <div class="prototype-note">
+        ※ 현재 Web v3의 이력은 페이지가 열려 있는 동안의 프로토타입 메모리에 저장됩니다.
+        ESP32 재부팅 후에도 유지되는 비휘발성 저장은 최종 통합 단계에서 별도로 연결할 수 있습니다.
+      </div>
     </div>
 
   </div>
@@ -726,25 +1056,106 @@ const char PAGE[] PROGMEM = R"rawliteral(
 <script>
 
 // =====================================================
+// Configuration
+// =====================================================
+
+const REGION_CONFIG = {
+  abdomen: {
+    name: "복부",
+    code: "A"
+  },
+  leftThigh: {
+    name: "왼쪽 허벅지",
+    code: "LT"
+  },
+  rightThigh: {
+    name: "오른쪽 허벅지",
+    code: "RT"
+  },
+  upperArm: {
+    name: "위팔",
+    code: "UA"
+  }
+};
+
+const RECENT_WINDOW = 3;
+const MAX_HISTORY = 10;
+
+
+// =====================================================
 // State variables
 // =====================================================
 
-let selectedRegion = "";
+let currentStep = 1;
+
+let selectedRegionKey = "";
 let selectedSubRegion = null;
 let currentSessionSite = "";
 
-// Confirmed history only
+let sessionHadRotationWarning = false;
+
+// Confirmed sessions only
 let historyList = [];
 
-// Most recent N confirmed sessions used for warning
-const RECENT_WINDOW = 3;
+
+// =====================================================
+// Step navigation
+// =====================================================
+
+function showStep(step) {
+
+  currentStep = step;
+
+  document.getElementById("step1Panel")
+    .classList.toggle("visible", step === 1);
+
+  document.getElementById("step2Panel")
+    .classList.toggle("visible", step === 2);
+
+  document.getElementById("step3Panel")
+    .classList.toggle("visible", step === 3);
+
+  updateStepper();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+
+function updateStepper() {
+
+  for (let i = 1; i <= 3; i++) {
+
+    const node =
+      document.getElementById("stepNode" + i);
+
+    const circle =
+      document.getElementById("stepCircle" + i);
+
+    node.classList.remove("active", "done");
+
+    if (i < currentStep) {
+      node.classList.add("done");
+      circle.innerText = "✓";
+    } else if (i === currentStep) {
+      node.classList.add("active");
+      circle.innerText = String(i);
+    } else {
+      circle.innerText = String(i);
+    }
+  }
+
+  document.getElementById("stepLine1")
+    .classList.toggle("done", currentStep >= 2);
+
+  document.getElementById("stepLine2")
+    .classList.toggle("done", currentStep >= 3);
+}
 
 
 // =====================================================
-// Region selection
+// Region / site selection
 // =====================================================
 
-function selectRegion(button, region) {
+function selectRegion(button, regionKey) {
 
   document
     .querySelectorAll(".region-buttons button")
@@ -752,161 +1163,292 @@ function selectRegion(button, region) {
 
   button.classList.add("selected");
 
-  selectedRegion = region;
+  selectedRegionKey = regionKey;
   selectedSubRegion = null;
   currentSessionSite = "";
 
-  document.getElementById("mapRegionName").innerText =
-    region;
+  const region =
+    REGION_CONFIG[selectedRegionKey];
 
-  document.getElementById("state").innerText =
-    "SITE SELECTION";
+  document.getElementById("mapRegionName").innerText =
+    region.name + " · 세부 위치";
 
   document.getElementById("currentSite").innerText =
-    region + " / Select sub-region";
+    region.name + " / 세부 위치 선택";
 
-  document.getElementById("completeButton").disabled =
+  document.getElementById("startSessionButton").disabled =
     true;
 
-  document.getElementById("confirmation")
-    .classList.remove("visible");
+  clearRotationMessage();
 
-  resetSelectionStyle();
-  applyHistoryStyle();
-
-  document.getElementById("rotationCheck")
-    .classList.remove("warning");
-
-  document.getElementById("rotationMessage").innerText =
-    "세부 위치를 선택하면 최근 사용 이력과 비교합니다.";
+  renderRotationMap();
 }
 
 
-// =====================================================
-// Sub-region selection
-// =====================================================
-
 function selectSubRegion(index) {
 
-  if (selectedRegion === "") {
-
-    alert("먼저 Injection Region을 선택해주세요.");
+  if (selectedRegionKey === "") {
+    alert("먼저 주사 부위를 선택해주세요.");
     return;
   }
 
   selectedSubRegion = index;
 
+  const region =
+    REGION_CONFIG[selectedRegionKey];
+
   currentSessionSite =
-    selectedRegion + " / " + getRegionCode() + index;
-
-  resetSelectionStyle();
-  applyHistoryStyle();
-
-  const cell = document.querySelector(
-    '.site-cell[data-index="' + index + '"]'
-  );
-
-  cell.classList.add("selected");
+    region.name + " / " + region.code + index;
 
   document.getElementById("currentSite").innerText =
     currentSessionSite;
 
-  document.getElementById("state").innerText =
-    "ROTATION CHECK";
-
-  document.getElementById("completeButton").disabled =
+  document.getElementById("startSessionButton").disabled =
     false;
 
   runRotationCheck();
+  renderRotationMap();
+}
+
+
+function clearRotationMessage() {
+
+  const box =
+    document.getElementById("rotationCheck");
+
+  box.classList.remove("warning", "ok");
+
+  document.getElementById("rotationMessage").innerText =
+    "세부 위치를 선택하면 최근 확인된 이력과 비교합니다.";
 }
 
 
 // =====================================================
-// Region code
+// Rotation logic
 // =====================================================
 
-function getRegionCode() {
+function isCurrentSiteRecent() {
 
-  if (selectedRegion === "Abdomen") {
-    return "A";
-  }
+  const recentHistory =
+    historyList.slice(0, RECENT_WINDOW);
 
-  if (selectedRegion === "Left Thigh") {
-    return "LT";
-  }
-
-  if (selectedRegion === "Right Thigh") {
-    return "RT";
-  }
-
-  if (selectedRegion === "Upper Arm") {
-    return "UA";
-  }
-
-  return "S";
+  return recentHistory.some(
+    item => item.site === currentSessionSite
+  );
 }
 
-
-// =====================================================
-// Rotation Check
-// =====================================================
 
 function runRotationCheck() {
 
-  const checkBox =
+  const box =
     document.getElementById("rotationCheck");
 
   const message =
     document.getElementById("rotationMessage");
 
-  const recentHistory =
-    historyList.slice(0, RECENT_WINDOW);
-
   const usedRecently =
-    recentHistory.includes(currentSessionSite);
+    isCurrentSiteRecent();
+
+  sessionHadRotationWarning =
+    usedRecently;
+
+  box.classList.remove("warning", "ok");
 
   if (usedRecently) {
 
-    checkBox.classList.add("warning");
+    box.classList.add("warning");
 
     message.innerHTML =
-      "<strong>Recent site detected.</strong><br>" +
-      "이 세부 영역은 최근 사용 이력에 포함되어 있습니다. " +
-      "선택한 프로토콜의 rotation 기준을 확인하고 " +
-      "다른 위치를 고려할 수 있습니다.";
+      "<strong>최근 사용한 위치입니다.</strong><br>" +
+      "현재 선택은 최근 " +
+      RECENT_WINDOW +
+      "개의 확인 이력에 포함됩니다. " +
+      "데모 프로필의 Rotation 기준을 확인하고 다른 세부 위치를 고려할 수 있습니다.";
 
   } else {
 
-    checkBox.classList.remove("warning");
+    box.classList.add("ok");
 
     message.innerHTML =
-      "<strong>No recent match.</strong><br>" +
+      "<strong>최근 동일 위치 기록이 없습니다.</strong><br>" +
       "현재 선택은 최근 " +
       RECENT_WINDOW +
-      "개의 확인된 이력과 동일하지 않습니다.";
-
+      "개의 확인 이력과 동일하지 않습니다.";
   }
 }
 
 
 // =====================================================
-// Demo session completion
+// Rotation map rendering
 // =====================================================
 
-function completeDemoSession() {
+function renderRotationMap() {
+
+  document
+    .querySelectorAll(".site-cell")
+    .forEach(cell => {
+
+      cell.classList.remove(
+        "selected",
+        "recent",
+        "history"
+      );
+
+      const badgeContainer =
+        cell.querySelector(".cell-badges");
+
+      badgeContainer.innerHTML = "";
+
+      if (selectedRegionKey === "") {
+        return;
+      }
+
+      const index =
+        parseInt(cell.dataset.index);
+
+      const region =
+        REGION_CONFIG[selectedRegionKey];
+
+      const siteName =
+        region.name + " / " + region.code + index;
+
+      const recentHistory =
+        historyList.slice(0, RECENT_WINDOW);
+
+      const historyOrder =
+        recentHistory.findIndex(
+          item => item.site === siteName
+        );
+
+      if (historyOrder === 0) {
+
+        cell.classList.add("recent");
+
+        addCellBadge(
+          badgeContainer,
+          "RECENT"
+        );
+
+      } else if (historyOrder > 0) {
+
+        cell.classList.add("history");
+
+        addCellBadge(
+          badgeContainer,
+          "HISTORY"
+        );
+      }
+
+      if (selectedSubRegion === index) {
+
+        cell.classList.add("selected");
+
+        addCellBadge(
+          badgeContainer,
+          "SELECTED",
+          true
+        );
+      }
+    });
+}
+
+
+function addCellBadge(container, text, selected = false) {
+
+  const badge =
+    document.createElement("span");
+
+  badge.className =
+    "cell-badge" +
+    (selected ? " selected-badge" : "");
+
+  badge.innerText = text;
+
+  container.appendChild(badge);
+}
+
+
+// =====================================================
+// STEP 1 -> STEP 2
+// =====================================================
+
+function startInjectionSession() {
 
   if (currentSessionSite === "") {
     return;
   }
 
-  document.getElementById("state").innerText =
-    "SESSION COMPLETE";
+  // Freeze the warning result at the moment session starts
+  sessionHadRotationWarning =
+    isCurrentSiteRecent();
+
+  document.getElementById("sessionSite").innerText =
+    currentSessionSite;
+
+  document.getElementById("sessionState").innerText =
+    "READY";
+
+  document.getElementById("rotationValue").innerText =
+    sessionHadRotationWarning
+      ? "최근 위치 경고"
+      : "최근 중복 없음";
+
+  // Sensor placeholders until physical integration
+  document.getElementById("padValue").innerText =
+    "대기";
+
+  document.getElementById("penValue").innerText =
+    "대기";
+
+  document.getElementById("orientationValue").innerText =
+    "대기";
+
+  document.getElementById("plungerValue").innerText =
+    "대기";
+
+  document.getElementById("holdValue").innerText =
+    "0.0 s";
+
+  showStep(2);
+}
+
+
+function backToSiteSelection() {
+  showStep(1);
+}
+
+
+// =====================================================
+// STEP 2 -> STEP 3
+// =====================================================
+
+function completeDemoInjection() {
+
+  if (currentSessionSite === "") {
+    return;
+  }
+
+  document.getElementById("resultSite").innerText =
+    currentSessionSite;
+
+  document.getElementById("resultRotation").innerText =
+    sessionHadRotationWarning
+      ? "최근 위치 경고 확인"
+      : "최근 동일 위치 없음";
 
   document.getElementById("confirmSite").innerText =
     currentSessionSite;
 
-  document.getElementById("confirmation")
-    .classList.add("visible");
+  document.getElementById("confirmation").style.display =
+    "block";
+
+  document.getElementById("recordedBox")
+    .classList.remove("visible");
+
+  document.getElementById("newSessionButton").style.display =
+    "none";
+
+  showStep(3);
 }
 
 
@@ -920,126 +1462,122 @@ function confirmSite() {
     return;
   }
 
-  // Commit only after confirmation
-  historyList.unshift(currentSessionSite);
+  const newRecord = {
+    site: currentSessionSite,
+    regionKey: selectedRegionKey,
+    subRegion: selectedSubRegion,
+    result: "COMPLETE",
+    rotationWarning: sessionHadRotationWarning
+  };
 
-  // Keep only recent 10 sessions in prototype
-  if (historyList.length > 10) {
+  historyList.unshift(newRecord);
+
+  if (historyList.length > MAX_HISTORY) {
     historyList.pop();
   }
 
-  document.getElementById("state").innerText =
-    "RESULT";
-
-  document.getElementById("confirmation")
-    .classList.remove("visible");
-
   renderHistory();
 
-  resetSelectionStyle();
-  applyHistoryStyle();
+  document.getElementById("confirmation").style.display =
+    "none";
 
-  // Current session reset
-  selectedSubRegion = null;
-  currentSessionSite = "";
+  document.getElementById("recordedBox")
+    .classList.add("visible");
 
-  document.getElementById("currentSite").innerText =
-    "Session recorded";
-
-  document.getElementById("completeButton").disabled =
-    true;
+  document.getElementById("newSessionButton").style.display =
+    "block";
 }
 
 
 function correctSite() {
 
-  document.getElementById("state").innerText =
-    "SITE CORRECTION";
+  document.getElementById("confirmation").style.display =
+    "none";
 
-  document.getElementById("confirmation")
+  document.getElementById("recordedBox")
     .classList.remove("visible");
 
-  document.getElementById("rotationMessage").innerText =
-    "실제 수행한 위치에 맞게 다시 선택해주세요.";
+  document.getElementById("newSessionButton").style.display =
+    "none";
+
+  showStep(1);
+
+  document.getElementById("rotationMessage").innerHTML =
+    "<strong>위치 수정 중입니다.</strong><br>" +
+    "실제 수행한 위치에 맞게 주사 부위와 세부 위치를 다시 선택해주세요.";
+
+  renderRotationMap();
 }
 
 
 // =====================================================
-// Visual history map
+// New session
 // =====================================================
 
-function resetSelectionStyle() {
+function startNewSession() {
+
+  selectedRegionKey = "";
+  selectedSubRegion = null;
+  currentSessionSite = "";
+  sessionHadRotationWarning = false;
 
   document
-    .querySelectorAll(".site-cell")
-    .forEach(cell => {
+    .querySelectorAll(".region-buttons button")
+    .forEach(b => b.classList.remove("selected"));
 
-      cell.classList.remove(
-        "selected",
-        "recent-1",
-        "recent-2",
-        "recent-3"
-      );
+  document.getElementById("mapRegionName").innerText =
+    "부위를 먼저 선택해주세요";
 
-    });
-}
+  document.getElementById("currentSite").innerText =
+    "선택된 위치 없음";
 
+  document.getElementById("startSessionButton").disabled =
+    true;
 
-function applyHistoryStyle() {
+  clearRotationMessage();
+  renderRotationMap();
 
-  if (selectedRegion === "") {
-    return;
-  }
+  document.getElementById("confirmation").style.display =
+    "block";
 
-  const regionCode = getRegionCode();
+  document.getElementById("recordedBox")
+    .classList.remove("visible");
 
-  // Apply style to the 3 most recent positions
-  const recent = historyList.slice(0, 3);
+  document.getElementById("newSessionButton").style.display =
+    "none";
 
-  recent.forEach((site, order) => {
-
-    const prefix =
-      selectedRegion + " / " + regionCode;
-
-    if (site.startsWith(prefix)) {
-
-      const indexText =
-        site.substring(prefix.length);
-
-      const index =
-        parseInt(indexText);
-
-      const cell = document.querySelector(
-        '.site-cell[data-index="' + index + '"]'
-      );
-
-      if (cell) {
-
-        cell.classList.add(
-          "recent-" + (order + 1)
-        );
-
-      }
-    }
-
-  });
+  showStep(1);
 }
 
 
 // =====================================================
-// History list
+// History
 // =====================================================
 
 function renderHistory() {
 
+  renderHistoryInto(
+    "historyContainerStep1"
+  );
+
+  renderHistoryInto(
+    "historyContainerStep3"
+  );
+
+  renderRotationMap();
+}
+
+
+function renderHistoryInto(containerId) {
+
   const container =
-    document.getElementById("historyContainer");
+    document.getElementById(containerId);
 
   if (historyList.length === 0) {
 
     container.innerHTML =
       '<div class="history-empty">' +
-      'No confirmed history' +
+      '아직 확인된 기록이 없습니다.' +
       '</div>';
 
     return;
@@ -1048,7 +1586,7 @@ function renderHistory() {
   let html =
     '<div class="history-list">';
 
-  historyList.forEach((site, index) => {
+  historyList.forEach((item, index) => {
 
     html +=
       '<div class="history-item">' +
@@ -1057,22 +1595,42 @@ function renderHistory() {
           String(index + 1).padStart(2, "0") +
         '</div>' +
 
-        '<div class="history-site">' +
-          site +
+        '<div>' +
+          '<div class="history-site">' +
+            item.site +
+          '</div>' +
+
+          '<div class="history-meta">' +
+            'Demo Profile · ' +
+            item.result +
+            (item.rotationWarning
+              ? ' · Rotation warning'
+              : '') +
+          '</div>' +
         '</div>' +
 
         '<div class="history-status">' +
-          (index === 0 ? "MOST RECENT" : "CONFIRMED") +
+          (index === 0
+            ? "MOST RECENT"
+            : "CONFIRMED") +
         '</div>' +
 
       '</div>';
-
   });
 
   html += '</div>';
 
   container.innerHTML = html;
 }
+
+
+// =====================================================
+// Initial rendering
+// =====================================================
+
+updateStepper();
+renderHistory();
+renderRotationMap();
 
 </script>
 
@@ -1090,7 +1648,7 @@ void setup() {
   Serial.begin(115200);
 
   Serial.println();
-  Serial.println("Starting KOKCHI Rotation Web v2...");
+  Serial.println("Starting KOKCHI Integrated Web v3...");
 
   WiFi.mode(WIFI_AP);
 
