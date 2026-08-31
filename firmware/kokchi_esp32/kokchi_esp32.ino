@@ -2,7 +2,7 @@
 #include <WebServer.h>
 
 // =====================================================
-// KOKCHI - Integrated Web HMI Prototype v3
+// KOKCHI - Integrated Web HMI Prototype v3.1
 // Rotation + Injection Session + Result / History
 // =====================================================
 
@@ -1007,6 +1007,13 @@ const char PAGE[] PROGMEM = R"rawliteral(
 
         <div class="confirm-site" id="confirmSite">-</div>
 
+        <button
+          class="action-button secondary"
+          id="backToInjectionButton"
+          onclick="backToInjectionSession()">
+          ← 이전 단계
+        </button>
+
         <div class="confirm-buttons">
           <button class="confirm-button" onclick="confirmSite()">
             이 위치로 기록
@@ -1442,6 +1449,9 @@ function completeDemoInjection() {
   document.getElementById("confirmation").style.display =
     "block";
 
+  document.getElementById("backToInjectionButton").style.display =
+    "block";
+
   document.getElementById("recordedBox")
     .classList.remove("visible");
 
@@ -1449,6 +1459,21 @@ function completeDemoInjection() {
     "none";
 
   showStep(3);
+}
+
+
+// =====================================================
+// STEP 3 -> STEP 2
+// =====================================================
+
+function backToInjectionSession() {
+
+  if (currentSessionSite === "") {
+    return;
+  }
+
+  // 기록 확정 전까지만 STEP 2로 돌아갈 수 있다.
+  showStep(2);
 }
 
 
@@ -1479,6 +1504,9 @@ function confirmSite() {
   renderHistory();
 
   document.getElementById("confirmation").style.display =
+    "none";
+
+  document.getElementById("backToInjectionButton").style.display =
     "none";
 
   document.getElementById("recordedBox")
@@ -1538,6 +1566,9 @@ function startNewSession() {
   renderRotationMap();
 
   document.getElementById("confirmation").style.display =
+    "block";
+
+  document.getElementById("backToInjectionButton").style.display =
     "block";
 
   document.getElementById("recordedBox")
@@ -1648,7 +1679,7 @@ void setup() {
   Serial.begin(115200);
 
   Serial.println();
-  Serial.println("Starting KOKCHI Integrated Web v3...");
+  Serial.println("Starting KOKCHI Integrated Web v3.1...");
 
   WiFi.mode(WIFI_AP);
 
