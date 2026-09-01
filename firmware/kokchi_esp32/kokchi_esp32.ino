@@ -1958,8 +1958,9 @@ const char PAGE[] PROGMEM = R"rawliteral(
       </div>
 
       <div class="prototype-note">
-        ※ 현재 Web v3의 이력은 페이지가 열려 있는 동안의 프로토타입 메모리에 저장됩니다.
-        ESP32 재부팅 후에도 유지되는 비휘발성 저장은 최종 통합 단계에서 별도로 연결할 수 있습니다.
+        ※ 확인된 이력은 현재 휴대폰 브라우저에 저장됩니다.
+        같은 브라우저에서는 새로고침하거나 다시 접속해도 유지되며,
+        다른 기기 또는 브라우저 데이터 삭제 시에는 공유·복원되지 않습니다.
       </div>
     </div>
 
@@ -2007,6 +2008,7 @@ const REGION_CONFIG = {
 
 const RECENT_WINDOW = DEMO_PROFILE.recentWindow;
 const MAX_HISTORY = DEMO_PROFILE.maxHistory;
+const HISTORY_STORAGE_KEY = "kokchi_history_v1";
 
 
 // =====================================================
@@ -2029,6 +2031,79 @@ let statusRequestInFlight = false;
 
 // Confirmed sessions only
 let historyList = [];
+
+
+function loadHistory() {
+
+  try {
+
+    const storedHistory =
+      localStorage.getItem(HISTORY_STORAGE_KEY);
+
+    if (!storedHistory) {
+      historyList = [];
+      return;
+    }
+
+    const parsedHistory = JSON.parse(storedHistory);
+
+    if (!Array.isArray(parsedHistory)) {
+      historyList = [];
+      return;
+    }
+
+    historyList = parsedHistory
+      .filter((item) =>
+        item &&
+        typeof item.site === "string" &&
+        item.site.length > 0
+      )
+      .slice(0, MAX_HISTORY);
+
+  } catch (error) {
+
+    historyList = [];
+    console.warn("History load failed", error);
+  }
+}
+
+
+function saveHistory() {
+
+  try {
+
+    localStorage.setItem(
+      HISTORY_STORAGE_KEY,
+      JSON.stringify(historyList.slice(0, MAX_HISTORY))
+    );
+
+  } catch (error) {
+
+    console.warn("History save failed", error);
+  }
+}
+
+
+function formatHistoryTime(value) {
+
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
 
 
 // =====================================================
@@ -2553,7 +2628,8 @@ function confirmSite() {
     regionKey: selectedRegionKey,
     subRegion: selectedSubRegion,
     result: "COMPLETE",
-    rotationWarning: sessionHadRotationWarning
+    rotationWarning: sessionHadRotationWarning,
+    confirmedAt: new Date().toISOString()
   };
 
   historyList.unshift(newRecord);
@@ -2562,6 +2638,7 @@ function confirmSite() {
     historyList.pop();
   }
 
+  saveHistory();
   renderHistory();
 
   document.getElementById("confirmation").style.display =
@@ -2699,6 +2776,9 @@ function renderHistoryInto(containerId) {
 
   historyList.forEach((item, index) => {
 
+    const confirmedTime =
+      formatHistoryTime(item.confirmedAt);
+
     html +=
       '<div class="history-item">' +
 
@@ -2713,6 +2793,9 @@ function renderHistoryInto(containerId) {
 
           '<div class="history-meta">' +
             '데모 프로필 · 완료' +
+            (confirmedTime
+              ? ' · ' + confirmedTime
+              : '') +
             (item.rotationWarning
               ? ' · 최근 위치 경고 발생'
               : '') +
@@ -3043,6 +3126,7 @@ async function pollDeviceStatus() {
 
 applyProfile();
 updateStepper();
+loadHistory();
 renderHistory();
 renderRotationMap();
 pollDeviceStatus();
