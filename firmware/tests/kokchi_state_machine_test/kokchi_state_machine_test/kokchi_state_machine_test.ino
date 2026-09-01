@@ -2,25 +2,24 @@
 #include <math.h>
 
 // =========================================================
-// KOKCHI - Embedded State Machine Test v2
+// KOKCHI - State Machine Test
+// 2026-09-02
 //
-// FINAL GRIP REFERENCE
-// - 표시된 GRIP 방향 유지
-// - 주사기 축 = 몸/패드 표면과 수직
-// - 주사기 축 = 지면과 평행
+// BEFORE PLUNGER
+//   - Check configured reference orientation
+//   - Persistent orientation deviation: Red + Vibration
 //
-// INPUT
-// IMU SDA     GPIO21
-// IMU SCL     GPIO22
-// FSR-PAD     GPIO32
-// FSR-PEN     GPIO34
-// Plunger     GPIO27
+// AFTER PLUNGER DOWN
+//   - Capture pose at PLUNGER DOWN
+//   - Monitor drift from captured pose
+//   - Drift warning: Red LED only
+//   - No vibration during HOLD
+//   - Hold timer continues during warning
 //
-// OUTPUT
-// Vibration   GPIO26
-// Buzzer      GPIO25
-// Green LED   GPIO33
-// Red LED     GPIO14
+// HOLD COMPLETE
+//   - Green LED
+//   - Buzzer notification
+//   - Wait for plunger release
 // =========================================================
 
 
@@ -40,76 +39,68 @@ const int BUZZER_PIN = 25;
 const int GREEN_LED_PIN = 33;
 const int RED_LED_PIN = 14;
 
-
-// =========================================================
-// IMU
-// =========================================================
-
 const uint8_t IMU_ADDR = 0x68;
 
 
 // =========================================================
-// FINAL CALIBRATION PARAMETERS
+// CONTACT THRESHOLDS
 // =========================================================
 
-// FSR Contact Threshold
 const int FSR_PAD_THRESHOLD = 2000;
 const int FSR_PEN_THRESHOLD = 1500;
 
 
-// FINAL marked-grip reference
-const float TARGET_ROLL = -7.56;
-const float TARGET_PITCH = 52.83;
+// =========================================================
+// PRE-INJECTION ORIENTATION
+// =========================================================
 
+const float TARGET_ROLL  = -7.56f;
+const float TARGET_PITCH = 52.83f;
 
-// -----------------------------------------
-// 수정된 Orientation 허용범위
-// 기존 ±3° → ±4°
-// -----------------------------------------
+const float PRE_ROLL_TOLERANCE  = 8.0f;
+const float PRE_PITCH_TOLERANCE = 8.0f;
 
-const float ROLL_TOLERANCE = 4.0;
-const float PITCH_TOLERANCE = 4.0;
-
-
-// -----------------------------------------
-// 순간적인 손떨림 방지
-//
-// 기준 범위를 벗어나도
-// 300ms 이상 계속 틀어져 있어야
-// 실제 BAD_ORIENTATION으로 인정
-// -----------------------------------------
-
-const unsigned long BAD_ORIENTATION_CONFIRM_MS = 300;
+const unsigned long PRE_BAD_CONFIRM_MS = 400;
 
 
 // =========================================================
-// FEEDBACK PARAMETERS
+// DURING-HOLD STABILITY
+// =========================================================
+
+// Reference = pose captured at valid PLUNGER DOWN.
+
+const float HOLD_DRIFT_WARN_ROLL  = 7.0f;
+const float HOLD_DRIFT_WARN_PITCH = 7.0f;
+
+// Persistent deviation before Red warning.
+const unsigned long HOLD_DRIFT_WARN_CONFIRM_MS = 250;
+
+// Recovery threshold for hysteresis.
+const float HOLD_DRIFT_CLEAR_ROLL  = 5.5f;
+const float HOLD_DRIFT_CLEAR_PITCH = 5.5f;
+
+// Stable recovery before Green is restored.
+const unsigned long HOLD_DRIFT_CLEAR_CONFIRM_MS = 200;
+
+
+// =========================================================
+// FEEDBACK / SYSTEM PARAMETERS
 // =========================================================
 
 const unsigned long VIBRATION_MS = 70;
-
-// 진동 종료 후 IMU 안정화 보호시간
 const unsigned long IMU_SETTLE_MS = 250;
 
-// 완료음
-const unsigned long BUZZER_MS = 100;
-
-
-// =========================================================
-// HOLD
-// =========================================================
-
-// Demo Profile 테스트용 값
-// 의료적 절대 기준 아님
-const float HOLD_TARGET_SEC = 3.0;
-
-
-// =========================================================
-// BUTTON / SERIAL
-// =========================================================
+const unsigned long BUZZER_MS = 350;
 
 const unsigned long DEBOUNCE_MS = 30;
 const unsigned long PRINT_INTERVAL_MS = 200;
+
+
+// =========================================================
+// HOLD CONFIGURATION
+// =========================================================
+
+unsigned long holdTargetMs = 3000;
 
 
 // =========================================================
@@ -117,13 +108,13 @@ const unsigned long PRINT_INTERVAL_MS = 200;
 // =========================================================
 
 enum SystemState {
-
   WAIT_SITE,
   READY,
   ORIENTATION_CHECK,
   HOLDING,
+  HOLD_COMPLETE,
   RESULT_SUCCESS,
-  RESULT_FAIL
+  RESULT_INTERRUPTED
 };
 
 SystemState state = WAIT_SITE;
@@ -134,12 +125,11 @@ SystemState state = WAIT_SITE;
 // =========================================================
 
 enum IssueCode {
-
   ISSUE_NONE,
   PARTIAL_CONTACT,
-  BAD_ORIENTATION,
+  BAD_ORIENTATION_PRE,
   PLUNGER_TOO_EARLY,
-  CONTACT_LOST,
+  HOLD_MOVEMENT,
   EARLY_RELEASE
 };
 
@@ -150,8 +140,8 @@ IssueCode currentIssue = ISSUE_NONE;
 // SENSOR VALUES
 // =========================================================
 
-float rollDeg = 0.0;
-float pitchDeg = 0.0;
+float rollDeg = 0.0f;
+float pitchDeg = 0.0f;
 
 bool imuReadOK = false;
 
@@ -162,21 +152,36 @@ bool padContact = false;
 bool penContact = false;
 bool contactConfirmed = false;
 
-bool orientationGood = false;
+
+// =========================================================
+// PRE-ORIENTATION FILTER
+// =========================================================
+
+bool preBadTiming = false;
+bool preBadConfirmed = false;
+
+unsigned long preBadStartMs = 0;
 
 
 // =========================================================
-// ORIENTATION CONFIRM TIMER
+// HOLD REFERENCE / DRIFT
 // =========================================================
 
-// 자세가 처음 틀어진 시간
-unsigned long badOrientationStartMs = 0;
+float holdStartRoll = 0.0f;
+float holdStartPitch = 0.0f;
 
-// 현재 BAD timer가 동작 중인지
-bool badOrientationTiming = false;
+bool holdDriftWarning = false;
 
-// 300ms 이상 계속 틀어졌는지
-bool badOrientationConfirmed = false;
+bool holdDriftBadTiming = false;
+unsigned long holdDriftBadStartMs = 0;
+
+bool holdDriftClearTiming = false;
+unsigned long holdDriftClearStartMs = 0;
+
+int holdDriftWarningCount = 0;
+
+float maxHoldDriftRoll = 0.0f;
+float maxHoldDriftPitch = 0.0f;
 
 
 // =========================================================
@@ -189,15 +194,17 @@ bool stablePlunger = HIGH;
 bool plungerDownEvent = false;
 bool plungerUpEvent = false;
 
-unsigned long debounceStart = 0;
+bool pendingPlungerStart = false;
+
+unsigned long debounceStartMs = 0;
 
 
 // =========================================================
-// HOLD
+// HOLD TIMER
 // =========================================================
 
-unsigned long validHoldAccumMs = 0;
-unsigned long lastHoldUpdateMs = 0;
+unsigned long holdStartMs = 0;
+unsigned long holdElapsedMs = 0;
 
 
 // =========================================================
@@ -210,7 +217,14 @@ bool buzzerActive = false;
 unsigned long vibrationEndMs = 0;
 unsigned long buzzerEndMs = 0;
 
-unsigned long imuIgnoreUntil = 0;
+unsigned long imuIgnoreUntilMs = 0;
+
+
+// =========================================================
+// SERIAL INPUT
+// =========================================================
+
+bool serialWaitingForZero = false;
 
 
 // =========================================================
@@ -221,7 +235,25 @@ unsigned long lastPrintMs = 0;
 
 
 // =========================================================
-// IMU INITIALIZATION
+// ANGLE DIFFERENCE
+// =========================================================
+
+float angleDiffAbs(
+  float a,
+  float b
+) {
+  float d =
+      fmodf(
+        a - b + 540.0f,
+        360.0f
+      ) - 180.0f;
+
+  return fabsf(d);
+}
+
+
+// =========================================================
+// IMU INIT
 // =========================================================
 
 bool initIMU() {
@@ -230,30 +262,34 @@ bool initIMU() {
   Wire.write(0x6B);
   Wire.write(0x00);
 
-  if (Wire.endTransmission() != 0) {
+  if (
+    Wire.endTransmission() != 0
+  ) {
     return false;
   }
 
   delay(100);
 
-
-  // WHO_AM_I
   Wire.beginTransmission(IMU_ADDR);
   Wire.write(0x75);
 
-  if (Wire.endTransmission(false) != 0) {
+  if (
+    Wire.endTransmission(false) != 0
+  ) {
     return false;
   }
 
-  Wire.requestFrom(IMU_ADDR, (uint8_t)1);
+  Wire.requestFrom(
+    IMU_ADDR,
+    (uint8_t)1
+  );
 
   if (!Wire.available()) {
     return false;
   }
 
-
-  uint8_t whoAmI = Wire.read();
-
+  uint8_t whoAmI =
+      Wire.read();
 
   Serial.print("WHO_AM_I = 0x");
 
@@ -261,40 +297,50 @@ bool initIMU() {
     Serial.print("0");
   }
 
-  Serial.println(whoAmI, HEX);
+  Serial.println(
+    whoAmI,
+    HEX
+  );
 
-
-  if (whoAmI == 0x00 ||
-      whoAmI == 0xFF) {
-
+  if (
+    whoAmI == 0x00 ||
+    whoAmI == 0xFF
+  ) {
     return false;
   }
-
 
   return true;
 }
 
 
 // =========================================================
-// READ IMU
+// IMU READ
 // =========================================================
 
-bool readIMU(float &roll, float &pitch) {
+bool readIMU(
+  float &roll,
+  float &pitch
+) {
 
   Wire.beginTransmission(IMU_ADDR);
   Wire.write(0x3B);
 
-  if (Wire.endTransmission(false) != 0) {
+  if (
+    Wire.endTransmission(false) != 0
+  ) {
     return false;
   }
 
+  Wire.requestFrom(
+    IMU_ADDR,
+    (uint8_t)6
+  );
 
-  Wire.requestFrom(IMU_ADDR, (uint8_t)6);
-
-  if (Wire.available() < 6) {
+  if (
+    Wire.available() < 6
+  ) {
     return false;
   }
-
 
   int16_t rawAx =
       ((int16_t)Wire.read() << 8) |
@@ -308,34 +354,40 @@ bool readIMU(float &roll, float &pitch) {
       ((int16_t)Wire.read() << 8) |
       Wire.read();
 
+  float ax =
+      rawAx / 16384.0f;
 
-  float ax = rawAx / 16384.0;
-  float ay = rawAy / 16384.0;
-  float az = rawAz / 16384.0;
+  float ay =
+      rawAy / 16384.0f;
 
+  float az =
+      rawAz / 16384.0f;
 
   roll =
-      atan2(ay, az) *
-      180.0 / PI;
-
+      atan2f(
+        ay,
+        az
+      )
+      *
+      180.0f / PI;
 
   pitch =
-      atan2(
+      atan2f(
         -ax,
-        sqrt(
+        sqrtf(
           ay * ay +
           az * az
         )
-      ) *
-      180.0 / PI;
-
+      )
+      *
+      180.0f / PI;
 
   return true;
 }
 
 
 // =========================================================
-// IMU DECISION VALID?
+// IMU DECISION VALID
 // =========================================================
 
 bool imuDecisionValid() {
@@ -344,132 +396,282 @@ bool imuDecisionValid() {
     return false;
   }
 
-
   return
     (long)(
       millis() -
-      imuIgnoreUntil
+      imuIgnoreUntilMs
     ) >= 0;
 }
 
 
 // =========================================================
-// RAW ORIENTATION CHECK
+// PRE-INJECTION ORIENTATION
 // =========================================================
 
-bool checkOrientationRaw() {
+bool preOrientationRawGood() {
 
-  float deltaRoll =
-      fabs(
-        rollDeg -
+  float dRoll =
+      angleDiffAbs(
+        rollDeg,
         TARGET_ROLL
       );
 
-  float deltaPitch =
-      fabs(
-        pitchDeg -
+  float dPitch =
+      angleDiffAbs(
+        pitchDeg,
         TARGET_PITCH
       );
 
-
   return
-    deltaRoll <= ROLL_TOLERANCE &&
-    deltaPitch <= PITCH_TOLERANCE;
+    dRoll <= PRE_ROLL_TOLERANCE
+    &&
+    dPitch <= PRE_PITCH_TOLERANCE;
 }
 
 
 // =========================================================
-// ORIENTATION STABILITY FILTER
-//
-// 핵심 수정 부분
-//
-// 순간적으로 기준 밖으로 나가도
-// 바로 BAD로 판정하지 않는다.
-//
-// 300ms 이상 연속해서 기준 밖일 때만
-// BAD_ORIENTATION 확정.
+// PRE-ORIENTATION FILTER
 // =========================================================
 
-bool updateOrientationDecision() {
+bool updatePreOrientation() {
 
-  unsigned long now = millis();
-
+  unsigned long now =
+      millis();
 
   bool rawGood =
-      checkOrientationRaw();
-
-
-  // -----------------------------------------
-  // 정상 자세
-  // -----------------------------------------
+      preOrientationRawGood();
 
   if (rawGood) {
 
-    // BAD timer 초기화
-    badOrientationTiming = false;
-    badOrientationConfirmed = false;
+    preBadTiming = false;
+    preBadConfirmed = false;
+    preBadStartMs = 0;
 
     return true;
   }
 
+  if (!preBadTiming) {
 
-  // -----------------------------------------
-  // 처음 기준을 벗어남
-  // -----------------------------------------
+    preBadTiming = true;
+    preBadConfirmed = false;
+    preBadStartMs = now;
 
-  if (!badOrientationTiming) {
-
-    badOrientationTiming = true;
-
-    badOrientationStartMs = now;
-
-    badOrientationConfirmed = false;
-
-
-    // 아직은 오류 확정하지 않음
     return true;
   }
-
-
-  // -----------------------------------------
-  // 계속 기준 밖
-  // -----------------------------------------
 
   if (
-    now -
-    badOrientationStartMs
+    now - preBadStartMs
     >=
-    BAD_ORIENTATION_CONFIRM_MS
+    PRE_BAD_CONFIRM_MS
   ) {
 
-    badOrientationConfirmed = true;
+    preBadConfirmed = true;
 
     return false;
   }
 
-
-  // 300ms 미만이면
-  // 잠깐의 흔들림으로 보고 정상 유지
   return true;
 }
 
 
-// =========================================================
-// RESET ORIENTATION FILTER
-// =========================================================
+void resetPreOrientationFilter() {
 
-void resetOrientationFilter() {
+  preBadTiming = false;
+  preBadConfirmed = false;
 
-  badOrientationTiming = false;
-
-  badOrientationConfirmed = false;
-
-  badOrientationStartMs = 0;
+  preBadStartMs = 0;
 }
 
 
 // =========================================================
-// LED FUNCTIONS
+// HOLD DRIFT FILTER
+// =========================================================
+
+void resetHoldDriftFilter() {
+
+  holdDriftWarning = false;
+
+  holdDriftBadTiming = false;
+  holdDriftBadStartMs = 0;
+
+  holdDriftClearTiming = false;
+  holdDriftClearStartMs = 0;
+
+  holdDriftWarningCount = 0;
+
+  maxHoldDriftRoll = 0.0f;
+  maxHoldDriftPitch = 0.0f;
+}
+
+
+// =========================================================
+// HOLD DRIFT UPDATE
+// =========================================================
+
+void updateHoldDrift() {
+
+  unsigned long now =
+      millis();
+
+  float dRoll =
+      angleDiffAbs(
+        rollDeg,
+        holdStartRoll
+      );
+
+  float dPitch =
+      angleDiffAbs(
+        pitchDeg,
+        holdStartPitch
+      );
+
+
+  // -----------------------------------------------------
+  // MAXIMUM DRIFT
+  // -----------------------------------------------------
+
+  if (
+    dRoll >
+    maxHoldDriftRoll
+  ) {
+    maxHoldDriftRoll =
+        dRoll;
+  }
+
+  if (
+    dPitch >
+    maxHoldDriftPitch
+  ) {
+    maxHoldDriftPitch =
+        dPitch;
+  }
+
+
+  // -----------------------------------------------------
+  // NO WARNING ACTIVE
+  // -----------------------------------------------------
+
+  if (!holdDriftWarning) {
+
+    bool beyondWarn =
+        dRoll >
+          HOLD_DRIFT_WARN_ROLL
+        ||
+        dPitch >
+          HOLD_DRIFT_WARN_PITCH;
+
+    if (beyondWarn) {
+
+      if (!holdDriftBadTiming) {
+
+        holdDriftBadTiming =
+            true;
+
+        holdDriftBadStartMs =
+            now;
+      }
+
+      else if (
+        now -
+        holdDriftBadStartMs
+        >=
+        HOLD_DRIFT_WARN_CONFIRM_MS
+      ) {
+
+        holdDriftWarning =
+            true;
+
+        holdDriftBadTiming =
+            false;
+
+        holdDriftClearTiming =
+            false;
+
+        holdDriftWarningCount++;
+
+        currentIssue =
+            HOLD_MOVEMENT;
+
+        Serial.println(
+          ">>> HOLD MOVEMENT WARNING"
+        );
+      }
+    }
+
+    else {
+
+      holdDriftBadTiming =
+          false;
+
+      holdDriftBadStartMs =
+          0;
+    }
+  }
+
+
+  // -----------------------------------------------------
+  // WARNING ACTIVE
+  // -----------------------------------------------------
+
+  else {
+
+    bool insideClear =
+        dRoll <=
+          HOLD_DRIFT_CLEAR_ROLL
+        &&
+        dPitch <=
+          HOLD_DRIFT_CLEAR_PITCH;
+
+    if (insideClear) {
+
+      if (!holdDriftClearTiming) {
+
+        holdDriftClearTiming =
+            true;
+
+        holdDriftClearStartMs =
+            now;
+      }
+
+      else if (
+        now -
+        holdDriftClearStartMs
+        >=
+        HOLD_DRIFT_CLEAR_CONFIRM_MS
+      ) {
+
+        holdDriftWarning =
+            false;
+
+        holdDriftClearTiming =
+            false;
+
+        holdDriftBadTiming =
+            false;
+
+        currentIssue =
+            ISSUE_NONE;
+
+        Serial.println(
+          "<<< HOLD STABILITY RESTORED"
+        );
+      }
+    }
+
+    else {
+
+      holdDriftClearTiming =
+          false;
+
+      holdDriftClearStartMs =
+          0;
+    }
+  }
+}
+
+
+// =========================================================
+// LED
 // =========================================================
 
 void ledsOff() {
@@ -524,37 +726,41 @@ void startVibration() {
     return;
   }
 
-
   unsigned long now =
       millis();
-
 
   digitalWrite(
     VIBRATION_PIN,
     HIGH
   );
 
-
-  vibrationActive = true;
-
+  vibrationActive =
+      true;
 
   vibrationEndMs =
       now +
       VIBRATION_MS;
 
-
-  // 진동 70ms
-  // +
-  // IMU 안정화 250ms
-  imuIgnoreUntil =
+  imuIgnoreUntilMs =
       now +
       VIBRATION_MS +
       IMU_SETTLE_MS;
 
-
   Serial.println(
     ">>> VIBRATION WARNING"
   );
+}
+
+
+void stopVibration() {
+
+  digitalWrite(
+    VIBRATION_PIN,
+    LOW
+  );
+
+  vibrationActive =
+      false;
 }
 
 
@@ -568,33 +774,26 @@ void startBuzzer() {
     return;
   }
 
-
-  unsigned long now =
-      millis();
-
-
   digitalWrite(
     BUZZER_PIN,
     HIGH
   );
 
-
-  buzzerActive = true;
-
+  buzzerActive =
+      true;
 
   buzzerEndMs =
-      now +
+      millis() +
       BUZZER_MS;
 
-
   Serial.println(
-    ">>> COMPLETION BEEP"
+    ">>> HOLD COMPLETE BEEP"
   );
 }
 
 
 // =========================================================
-// UPDATE OUTPUTS
+// OUTPUT UPDATE
 // =========================================================
 
 void updateOutputs() {
@@ -602,10 +801,9 @@ void updateOutputs() {
   unsigned long now =
       millis();
 
-
-  // Vibration OFF
   if (
-    vibrationActive &&
+    vibrationActive
+    &&
     (long)(
       now -
       vibrationEndMs
@@ -617,17 +815,14 @@ void updateOutputs() {
       LOW
     );
 
-    vibrationActive = false;
-
-    Serial.println(
-      "<<< VIBRATION OFF"
-    );
+    vibrationActive =
+        false;
   }
 
 
-  // Buzzer OFF
   if (
-    buzzerActive &&
+    buzzerActive
+    &&
     (long)(
       now -
       buzzerEndMs
@@ -639,11 +834,8 @@ void updateOutputs() {
       LOW
     );
 
-    buzzerActive = false;
-
-    Serial.println(
-      "<<< BUZZER OFF"
-    );
+    buzzerActive =
+        false;
   }
 }
 
@@ -653,69 +845,98 @@ void updateOutputs() {
 // =========================================================
 
 void setIssue(
-  IssueCode newIssue
+  IssueCode newIssue,
+  bool vibrateOnNewIssue = false
 ) {
 
-  // 같은 오류 유지 중이면
-  // 진동 반복하지 않음
   if (
     newIssue ==
     currentIssue
   ) {
-
     return;
   }
-
 
   currentIssue =
       newIssue;
 
-
   if (
-    newIssue ==
-    ISSUE_NONE
+    newIssue != ISSUE_NONE
+    &&
+    vibrateOnNewIssue
   ) {
 
-    return;
+    startVibration();
   }
-
-
-  // 새 오류 발생 시
-  // 진동 1회
-  startVibration();
 }
 
 
 // =========================================================
-// ISSUE NAME
+// PLUNGER
 // =========================================================
 
-const char* issueName(
-  IssueCode issue
-) {
+void updatePlunger() {
 
-  switch (issue) {
+  plungerDownEvent =
+      false;
 
-    case ISSUE_NONE:
-      return "NONE";
+  plungerUpEvent =
+      false;
 
-    case PARTIAL_CONTACT:
-      return "PARTIAL_CONTACT";
+  unsigned long now =
+      millis();
 
-    case BAD_ORIENTATION:
-      return "BAD_ORIENTATION";
+  bool raw =
+      digitalRead(
+        PLUNGER_PIN
+      );
 
-    case PLUNGER_TOO_EARLY:
-      return "PLUNGER_TOO_EARLY";
+  if (
+    raw !=
+    lastRawPlunger
+  ) {
 
-    case CONTACT_LOST:
-      return "CONTACT_LOST";
+    lastRawPlunger =
+        raw;
 
-    case EARLY_RELEASE:
-      return "EARLY_RELEASE";
+    debounceStartMs =
+        now;
+  }
 
-    default:
-      return "UNKNOWN";
+  if (
+    now -
+    debounceStartMs
+    >=
+    DEBOUNCE_MS
+    &&
+    raw !=
+    stablePlunger
+  ) {
+
+    stablePlunger =
+        raw;
+
+    if (
+      stablePlunger ==
+      LOW
+    ) {
+
+      plungerDownEvent =
+          true;
+
+      Serial.println(
+        ">>> PLUNGER DOWN"
+      );
+    }
+
+    else {
+
+      plungerUpEvent =
+          true;
+
+      Serial.println(
+        "<<< PLUNGER RELEASE"
+      );
+    }
   }
 }
 
@@ -742,11 +963,48 @@ const char* stateName(
     case HOLDING:
       return "HOLDING";
 
+    case HOLD_COMPLETE:
+      return "HOLD_COMPLETE";
+
     case RESULT_SUCCESS:
       return "RESULT_SUCCESS";
 
-    case RESULT_FAIL:
-      return "RESULT_FAIL";
+    case RESULT_INTERRUPTED:
+      return "RESULT_INTERRUPTED";
+
+    default:
+      return "UNKNOWN";
+  }
+}
+
+
+// =========================================================
+// ISSUE NAME
+// =========================================================
+
+const char* issueName(
+  IssueCode issue
+) {
+
+  switch (issue) {
+
+    case ISSUE_NONE:
+      return "NONE";
+
+    case PARTIAL_CONTACT:
+      return "PARTIAL_CONTACT";
+
+    case BAD_ORIENTATION_PRE:
+      return "BAD_ORIENTATION_PRE";
+
+    case PLUNGER_TOO_EARLY:
+      return "PLUNGER_TOO_EARLY";
+
+    case HOLD_MOVEMENT:
+      return "HOLD_MOVEMENT";
+
+    case EARLY_RELEASE:
+      return "EARLY_RELEASE";
 
     default:
       return "UNKNOWN";
@@ -766,14 +1024,11 @@ void setState(
     state ==
     newState
   ) {
-
     return;
   }
 
-
   state =
       newState;
-
 
   Serial.println();
 
@@ -790,101 +1045,140 @@ void setState(
   );
 
 
-  // -----------------------------------------
-  // WAIT SITE
-  // -----------------------------------------
+  // -----------------------------------------------------
+  // READY
+  // -----------------------------------------------------
 
   if (
-    state ==
-    WAIT_SITE
-  ) {
-
-    ledsOff();
-
-    currentIssue =
-        ISSUE_NONE;
-
-    validHoldAccumMs = 0;
-
-    resetOrientationFilter();
-  }
-
-
-  // -----------------------------------------
-  // READY
-  // -----------------------------------------
-
-  else if (
     state ==
     READY
   ) {
 
+    setIssue(
+      ISSUE_NONE
+    );
+
+    pendingPlungerStart =
+        false;
+
     ledsOff();
 
-    currentIssue =
-        ISSUE_NONE;
-
-    validHoldAccumMs = 0;
-
-    resetOrientationFilter();
+    resetPreOrientationFilter();
   }
 
 
-  // -----------------------------------------
+  // -----------------------------------------------------
   // ORIENTATION CHECK
-  // -----------------------------------------
+  // -----------------------------------------------------
 
   else if (
     state ==
     ORIENTATION_CHECK
   ) {
 
-    currentIssue =
-        ISSUE_NONE;
+    setIssue(
+      ISSUE_NONE
+    );
 
-    resetOrientationFilter();
+    pendingPlungerStart =
+        false;
+
+    resetPreOrientationFilter();
   }
 
 
-  // -----------------------------------------
+  // -----------------------------------------------------
   // HOLDING
-  // -----------------------------------------
+  // -----------------------------------------------------
 
   else if (
     state ==
     HOLDING
   ) {
 
-    validHoldAccumMs = 0;
+    pendingPlungerStart =
+        false;
 
-    lastHoldUpdateMs =
+    // No vibration after valid PLUNGER DOWN.
+    stopVibration();
+
+
+    holdStartRoll =
+        rollDeg;
+
+    holdStartPitch =
+        pitchDeg;
+
+    holdStartMs =
         millis();
 
-    currentIssue =
-        ISSUE_NONE;
+    holdElapsedMs =
+        0;
 
-    resetOrientationFilter();
+    resetHoldDriftFilter();
+
+    setIssue(
+      ISSUE_NONE
+    );
 
     showGreen();
 
 
     Serial.println(
-      ">>> HOLD TIMER START"
+      ">>> HOLD START REFERENCE CAPTURED"
+    );
+
+    Serial.print(
+      "START ROLL = "
+    );
+
+    Serial.println(
+      holdStartRoll,
+      2
+    );
+
+    Serial.print(
+      "START PITCH = "
+    );
+
+    Serial.println(
+      holdStartPitch,
+      2
+    );
+
+    Serial.print(
+      "TARGET HOLD = "
+    );
+
+    Serial.print(
+      holdTargetMs /
+      1000.0f,
+      1
+    );
+
+    Serial.println(
+      " sec"
     );
   }
 
 
-  // -----------------------------------------
-  // SUCCESS
-  // -----------------------------------------
+  // -----------------------------------------------------
+  // HOLD COMPLETE
+  // -----------------------------------------------------
 
   else if (
     state ==
-    RESULT_SUCCESS
+    HOLD_COMPLETE
   ) {
 
-    currentIssue =
-        ISSUE_NONE;
+    holdElapsedMs =
+        holdTargetMs;
+
+    setIssue(
+      ISSUE_NONE
+    );
+
+    stopVibration();
 
     showGreen();
 
@@ -894,137 +1188,129 @@ void setState(
     Serial.println();
 
     Serial.println(
-      "========================="
+      "=========================="
     );
 
     Serial.println(
-      "      SESSION PASS"
+      "       HOLD COMPLETE"
     );
 
     Serial.println(
-      "========================="
+      "      RELEASE PLUNGER"
+    );
+
+    Serial.println(
+      "=========================="
     );
   }
 
 
-  // -----------------------------------------
-  // FAIL
-  // -----------------------------------------
+  // -----------------------------------------------------
+  // SUCCESS
+  // -----------------------------------------------------
 
   else if (
     state ==
-    RESULT_FAIL
+    RESULT_SUCCESS
   ) {
 
-    showRed();
+    setIssue(
+      ISSUE_NONE
+    );
 
-    startVibration();
+    stopVibration();
+
+    showGreen();
 
 
     Serial.println();
 
     Serial.println(
-      "========================="
+      "=========================="
     );
 
     Serial.println(
-      "      SESSION FAIL"
+      "       SESSION PASS"
+    );
+
+    Serial.print(
+      "Movement warnings: "
     );
 
     Serial.println(
-      "========================="
+      holdDriftWarningCount
+    );
+
+    Serial.print(
+      "Max Roll drift: "
+    );
+
+    Serial.print(
+      maxHoldDriftRoll,
+      2
+    );
+
+    Serial.println(
+      " deg"
+    );
+
+    Serial.print(
+      "Max Pitch drift: "
+    );
+
+    Serial.print(
+      maxHoldDriftPitch,
+      2
+    );
+
+    Serial.println(
+      " deg"
+    );
+
+    Serial.println(
+      "=========================="
     );
   }
-}
 
 
-// =========================================================
-// PLUNGER
-// =========================================================
+  // -----------------------------------------------------
+  // INTERRUPTED
+  // -----------------------------------------------------
 
-void updatePlunger() {
-
-  plungerDownEvent = false;
-  plungerUpEvent = false;
-
-
-  unsigned long now =
-      millis();
-
-
-  bool raw =
-      digitalRead(
-        PLUNGER_PIN
-      );
-
-
-  if (
-    raw !=
-    lastRawPlunger
+  else if (
+    state ==
+    RESULT_INTERRUPTED
   ) {
 
-    lastRawPlunger =
-        raw;
+    stopVibration();
 
-    debounceStart =
-        now;
+    showRed();
+
+
+    Serial.println();
+
+    Serial.println(
+      "=========================="
+    );
+
+    Serial.println(
+      "     SESSION INTERRUPTED"
+    );
+
+    Serial.print(
+      "ISSUE: "
+    );
+
+    Serial.println(
+      issueName(
+        currentIssue
+      )
+    );
+
+    Serial.println(
+      "=========================="
+    );
   }
-
-
-  if (
-    now -
-    debounceStart
-    >=
-    DEBOUNCE_MS
-    &&
-    raw !=
-    stablePlunger
-  ) {
-
-    stablePlunger =
-        raw;
-
-
-    // DOWN
-    if (
-      stablePlunger ==
-      LOW
-    ) {
-
-      plungerDownEvent =
-          true;
-
-
-      Serial.println(
-        ">>> PLUNGER DOWN"
-      );
-    }
-
-
-    // RELEASE
-    else {
-
-      plungerUpEvent =
-          true;
-
-
-      Serial.println(
-        "<<< PLUNGER RELEASE"
-      );
-    }
-  }
-}
-
-
-// =========================================================
-// VALID HOLD
-// =========================================================
-
-float getValidHoldSec() {
-
-  return
-    validHoldAccumMs /
-    1000.0;
 }
 
 
@@ -1062,23 +1348,42 @@ void updateStateMachine() {
     READY
   ) {
 
-    // 아무 접촉 없음
+    // Plunger pressed before preparation.
+    // Visual feedback only.
     if (
-      !padContact &&
-      !penContact
+      stablePlunger ==
+      LOW
     ) {
 
-      ledsOff();
+      showRed();
 
       setIssue(
-        ISSUE_NONE
+        PLUNGER_TOO_EARLY,
+        false
       );
 
       return;
     }
 
 
-    // 하나만 접촉
+    // No contact.
+    if (
+      !padContact
+      &&
+      !penContact
+    ) {
+
+      setIssue(
+        ISSUE_NONE
+      );
+
+      ledsOff();
+
+      return;
+    }
+
+
+    // Partial contact.
     if (
       padContact !=
       penContact
@@ -1087,21 +1392,18 @@ void updateStateMachine() {
       showRed();
 
       setIssue(
-        PARTIAL_CONTACT
+        PARTIAL_CONTACT,
+        false
       );
 
       return;
     }
 
 
-    // 둘 다 CONTACT
+    // Both contacts confirmed.
     if (
       contactConfirmed
     ) {
-
-      setIssue(
-        ISSUE_NONE
-      );
 
       setState(
         ORIENTATION_CHECK
@@ -1114,6 +1416,10 @@ void updateStateMachine() {
 
   // =====================================================
   // ORIENTATION CHECK
+  //
+  // Before PLUNGER:
+  // BAD  -> Red + Vibration
+  // GOOD -> Green
   // =====================================================
 
   else if (
@@ -1121,16 +1427,12 @@ void updateStateMachine() {
     ORIENTATION_CHECK
   ) {
 
-    // Contact 사라짐
     if (
       !contactConfirmed
     ) {
 
-      resetOrientationFilter();
-
-      setIssue(
-        ISSUE_NONE
-      );
+      pendingPlungerStart =
+          false;
 
       setState(
         READY
@@ -1140,7 +1442,28 @@ void updateStateMachine() {
     }
 
 
-    // 진동 후 IMU 안정화 중
+    if (
+      plungerDownEvent
+    ) {
+
+      pendingPlungerStart =
+          true;
+
+      Serial.println(
+        ">>> PLUNGER START REQUEST"
+      );
+    }
+
+
+    if (
+      plungerUpEvent
+    ) {
+
+      pendingPlungerStart =
+          false;
+    }
+
+
     if (
       !imuDecisionValid()
     ) {
@@ -1149,64 +1472,100 @@ void updateStateMachine() {
     }
 
 
-    // -----------------------------------------
-    // 새 filtered orientation 판단
-    // -----------------------------------------
-
-    orientationGood =
-        updateOrientationDecision();
+    bool good =
+        updatePreOrientation();
 
 
-    // -----------------------------------------
-    // 300ms 이상 확실히 BAD
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // BAD PRE-INJECTION ORIENTATION
+    // ---------------------------------------------------
 
-    if (
-      !orientationGood
-    ) {
+    if (!good) {
 
       showRed();
 
       setIssue(
-        BAD_ORIENTATION
+        BAD_ORIENTATION_PRE,
+        true
       );
 
-
-      // BAD 상태에서
-      // Plunger를 너무 일찍 누름
       if (
-        plungerDownEvent
+        stablePlunger ==
+        LOW
       ) {
 
-        setIssue(
-          PLUNGER_TOO_EARLY
-        );
+        pendingPlungerStart =
+            false;
       }
-
 
       return;
     }
 
 
-    // -----------------------------------------
-    // 정상 또는 순간적인 흔들림
-    // -----------------------------------------
-
-    showGreen();
+    // ---------------------------------------------------
+    // GOOD PRE-INJECTION ORIENTATION
+    // ---------------------------------------------------
 
     setIssue(
       ISSUE_NONE
     );
 
+    showGreen();
 
-    // 정상 상태에서
-    // Plunger DOWN
+
+    // ---------------------------------------------------
+    // VALID PLUNGER START
+    // ---------------------------------------------------
+
     if (
-      plungerDownEvent
+      pendingPlungerStart
     ) {
+
+      if (
+        stablePlunger !=
+        LOW
+      ) {
+
+        pendingPlungerStart =
+            false;
+
+        return;
+      }
+
+
+      if (
+        !preOrientationRawGood()
+      ) {
+
+        return;
+      }
+
+
+      pendingPlungerStart =
+          false;
 
       setState(
         HOLDING
+      );
+
+      return;
+    }
+
+
+    // ---------------------------------------------------
+    // PLUNGER HELD WITHOUT VALID START EVENT
+    // ---------------------------------------------------
+
+    if (
+      stablePlunger ==
+      LOW
+    ) {
+
+      showRed();
+
+      setIssue(
+        PLUNGER_TOO_EARLY,
+        false
       );
 
       return;
@@ -1216,6 +1575,12 @@ void updateStateMachine() {
 
   // =====================================================
   // HOLDING
+  //
+  // - Timer continues continuously.
+  // - Reference = pose at PLUNGER DOWN.
+  // - Movement warning = Red LED only.
+  // - No vibration.
+  // - Contact changes do not terminate HOLD.
   // =====================================================
 
   else if (
@@ -1223,131 +1588,109 @@ void updateStateMachine() {
     HOLDING
   ) {
 
-    unsigned long dt =
+    holdElapsedMs =
         now -
-        lastHoldUpdateMs;
+        holdStartMs;
 
 
-    lastHoldUpdateMs =
-        now;
-
-
-    // -----------------------------------------
-    // Contact loss
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // HOLD COMPLETE HAS HIGHEST PRIORITY
+    // ---------------------------------------------------
 
     if (
-      !contactConfirmed
+      holdElapsedMs >=
+      holdTargetMs
     ) {
 
-      setIssue(
-        CONTACT_LOST
-      );
-
       setState(
-        RESULT_FAIL
+        HOLD_COMPLETE
       );
 
       return;
     }
 
 
-    // -----------------------------------------
-    // Plunger RELEASE
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // EARLY PLUNGER RELEASE
+    // ---------------------------------------------------
 
     if (
       plungerUpEvent
     ) {
 
-      if (
-        getValidHoldSec()
-        >=
-        HOLD_TARGET_SEC
-      ) {
-
-        setState(
-          RESULT_SUCCESS
-        );
-      }
-
-      else {
-
-        setIssue(
-          EARLY_RELEASE
-        );
-
-        setState(
-          RESULT_FAIL
-        );
-      }
-
-
-      return;
-    }
-
-
-    // -----------------------------------------
-    // IMU 안정화 중
-    // -----------------------------------------
-
-    if (
-      !imuDecisionValid()
-    ) {
-
-      return;
-    }
-
-
-    // -----------------------------------------
-    // Filtered orientation 판단
-    // -----------------------------------------
-
-    orientationGood =
-        updateOrientationDecision();
-
-
-    // -----------------------------------------
-    // 300ms 이상 자세 오류
-    // -----------------------------------------
-
-    if (
-      !orientationGood
-    ) {
-
-      showRed();
-
       setIssue(
-        BAD_ORIENTATION
+        EARLY_RELEASE
       );
 
+      setState(
+        RESULT_INTERRUPTED
+      );
 
-      // 오류가 확정된 동안에는
-      // Hold 시간 누적하지 않음
       return;
     }
 
 
-    // -----------------------------------------
-    // 정상 또는 짧은 손떨림
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // HOLD ORIENTATION STABILITY
+    // ---------------------------------------------------
+
+    if (
+      imuDecisionValid()
+    ) {
+
+      updateHoldDrift();
+
+
+      // Movement warning.
+      if (
+        holdDriftWarning
+      ) {
+
+        showRed();
+      }
+
+
+      // Stable or recovered.
+      else {
+
+        if (
+          currentIssue ==
+          HOLD_MOVEMENT
+        ) {
+
+          setIssue(
+            ISSUE_NONE
+          );
+        }
+
+        showGreen();
+      }
+    }
+  }
+
+
+  // =====================================================
+  // HOLD COMPLETE
+  // =====================================================
+
+  else if (
+    state ==
+    HOLD_COMPLETE
+  ) {
 
     showGreen();
 
-    setIssue(
-      ISSUE_NONE
-    );
 
-
-    // 정상 조건에서만
-    // Hold 시간 누적
     if (
       stablePlunger ==
-      LOW
+      HIGH
     ) {
 
-      validHoldAccumMs +=
-          dt;
+      setState(
+        RESULT_SUCCESS
+      );
+
+      return;
     }
   }
 
@@ -1358,10 +1701,10 @@ void updateStateMachine() {
 
   else if (
     state ==
-    RESULT_SUCCESS
+      RESULT_SUCCESS
     ||
     state ==
-    RESULT_FAIL
+      RESULT_INTERRUPTED
   ) {
 
     return;
@@ -1370,7 +1713,144 @@ void updateStateMachine() {
 
 
 // =========================================================
-// SERIAL COMMAND
+// RESET SESSION
+// =========================================================
+
+void resetSession() {
+
+  digitalWrite(
+    VIBRATION_PIN,
+    LOW
+  );
+
+  digitalWrite(
+    BUZZER_PIN,
+    LOW
+  );
+
+
+  vibrationActive =
+      false;
+
+  buzzerActive =
+      false;
+
+  pendingPlungerStart =
+      false;
+
+  serialWaitingForZero =
+      false;
+
+
+  ledsOff();
+
+
+  currentIssue =
+      ISSUE_NONE;
+
+
+  holdStartMs =
+      0;
+
+  holdElapsedMs =
+      0;
+
+  holdStartRoll =
+      0.0f;
+
+  holdStartPitch =
+      0.0f;
+
+
+  resetPreOrientationFilter();
+
+  resetHoldDriftFilter();
+
+
+  imuIgnoreUntilMs =
+      0;
+
+
+  state =
+      WAIT_SITE;
+
+
+  Serial.println();
+
+  Serial.println(
+    "=== STATE -> WAIT_SITE ==="
+  );
+
+  Serial.print(
+    "CURRENT HOLD TARGET = "
+  );
+
+  Serial.print(
+    holdTargetMs /
+    1000.0f,
+    1
+  );
+
+  Serial.println(
+    " sec"
+  );
+
+  Serial.println(
+    "3 / 6 / 10 = target, S = start, N = reset"
+  );
+}
+
+
+// =========================================================
+// SET HOLD TARGET
+// =========================================================
+
+void setHoldTarget(
+  unsigned long targetMs
+) {
+
+  if (
+    state !=
+    WAIT_SITE
+  ) {
+
+    Serial.println(
+      "Change hold time before session start."
+    );
+
+    return;
+  }
+
+
+  holdTargetMs =
+      targetMs;
+
+
+  Serial.print(
+    ">>> HOLD TARGET SET: "
+  );
+
+  Serial.print(
+    holdTargetMs /
+    1000.0f,
+    1
+  );
+
+  Serial.println(
+    " sec"
+  );
+}
+
+
+// =========================================================
+// SERIAL CONTROL
+//
+// 3  = 3 sec
+// 6  = 6 sec
+// 10 = 10 sec
+// S  = start
+// N  = reset
+// H  = help
 // =========================================================
 
 void handleSerialCommands() {
@@ -1383,11 +1863,90 @@ void handleSerialCommands() {
         Serial.read();
 
 
-    // -----------------------------------------
-    // S = Web의 "이 위치로 시작"
-    // -----------------------------------------
+    if (
+      c == '\r' ||
+      c == '\n' ||
+      c == ' '
+    ) {
+      continue;
+    }
+
+
+    // ---------------------------------------------------
+    // COMPLETE "10"
+    // ---------------------------------------------------
 
     if (
+      serialWaitingForZero
+    ) {
+
+      if (
+        c == '0'
+      ) {
+
+        setHoldTarget(
+          10000
+        );
+
+        serialWaitingForZero =
+            false;
+
+        continue;
+      }
+
+      serialWaitingForZero =
+          false;
+    }
+
+
+    // ---------------------------------------------------
+    // START OF "10"
+    // ---------------------------------------------------
+
+    if (
+      c == '1'
+    ) {
+
+      serialWaitingForZero =
+          true;
+
+      continue;
+    }
+
+
+    // ---------------------------------------------------
+    // 3 SEC
+    // ---------------------------------------------------
+
+    if (
+      c == '3'
+    ) {
+
+      setHoldTarget(
+        3000
+      );
+    }
+
+
+    // ---------------------------------------------------
+    // 6 SEC
+    // ---------------------------------------------------
+
+    else if (
+      c == '6'
+    ) {
+
+      setHoldTarget(
+        6000
+      );
+    }
+
+
+    // ---------------------------------------------------
+    // START
+    // ---------------------------------------------------
+
+    else if (
       c == 's' ||
       c == 'S'
     ) {
@@ -1397,10 +1956,8 @@ void handleSerialCommands() {
         WAIT_SITE
       ) {
 
-        Serial.println();
-
         Serial.println(
-          ">>> SITE SELECTED / SESSION START"
+          ">>> SESSION START"
         );
 
         setState(
@@ -1410,46 +1967,26 @@ void handleSerialCommands() {
     }
 
 
-    // -----------------------------------------
-    // N = New session
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // NEW / RESET
+    // ---------------------------------------------------
 
     else if (
       c == 'n' ||
       c == 'N'
     ) {
 
-      Serial.println();
-
       Serial.println(
         ">>> NEW SESSION"
       );
 
-
-      digitalWrite(
-        VIBRATION_PIN,
-        LOW
-      );
-
-      digitalWrite(
-        BUZZER_PIN,
-        LOW
-      );
-
-
-      vibrationActive = false;
-      buzzerActive = false;
-
-
-      setState(
-        WAIT_SITE
-      );
+      resetSession();
     }
 
 
-    // -----------------------------------------
-    // H = Help
-    // -----------------------------------------
+    // ---------------------------------------------------
+    // HELP
+    // ---------------------------------------------------
 
     else if (
       c == 'h' ||
@@ -1459,22 +1996,24 @@ void handleSerialCommands() {
       Serial.println();
 
       Serial.println(
-        "COMMANDS:"
+        "3  = Hold target 3 sec"
       );
 
       Serial.println(
-        "S = Start session / site selected"
+        "6  = Hold target 6 sec"
       );
 
       Serial.println(
-        "N = New session"
+        "10 = Hold target 10 sec"
       );
 
       Serial.println(
-        "H = Help"
+        "S  = Start session"
       );
 
-      Serial.println();
+      Serial.println(
+        "N  = New/reset session"
+      );
     }
   }
 }
@@ -1505,16 +2044,31 @@ void printStatus() {
       now;
 
 
-  float deltaRoll =
-      fabs(
-        rollDeg -
+  float preDR =
+      angleDiffAbs(
+        rollDeg,
         TARGET_ROLL
       );
 
-  float deltaPitch =
-      fabs(
-        pitchDeg -
+
+  float preDP =
+      angleDiffAbs(
+        pitchDeg,
         TARGET_PITCH
+      );
+
+
+  float holdDR =
+      angleDiffAbs(
+        rollDeg,
+        holdStartRoll
+      );
+
+
+  float holdDP =
+      angleDiffAbs(
+        pitchDeg,
+        holdStartPitch
       );
 
 
@@ -1527,7 +2081,6 @@ void printStatus() {
   );
 
 
-  // PAD
   Serial.print(
     " | PAD="
   );
@@ -1536,18 +2089,13 @@ void printStatus() {
     fsrPadValue
   );
 
-  Serial.print("(");
-
   Serial.print(
     padContact
-      ? "ON"
-      : "OFF"
+      ? "(ON)"
+      : "(OFF)"
   );
 
-  Serial.print(")");
 
-
-  // PEN
   Serial.print(
     " | PEN="
   );
@@ -1556,18 +2104,13 @@ void printStatus() {
     fsrPenValue
   );
 
-  Serial.print("(");
-
   Serial.print(
     penContact
-      ? "ON"
-      : "OFF"
+      ? "(ON)"
+      : "(OFF)"
   );
 
-  Serial.print(")");
 
-
-  // Roll
   Serial.print(
     " | ROLL="
   );
@@ -1578,7 +2121,6 @@ void printStatus() {
   );
 
 
-  // Pitch
   Serial.print(
     " | PITCH="
   );
@@ -1589,104 +2131,109 @@ void printStatus() {
   );
 
 
-  // Delta
-  Serial.print(
-    " | dR="
-  );
-
-  Serial.print(
-    deltaRoll,
-    2
-  );
-
-
-  Serial.print(
-    " | dP="
-  );
-
-  Serial.print(
-    deltaPitch,
-    2
-  );
-
-
-  // IMU valid
-  Serial.print(
-    " | IMU_VALID="
-  );
-
-  Serial.print(
-    imuDecisionValid()
-      ? "YES"
-      : "NO"
-  );
-
-
-  // Angle
-  Serial.print(
-    " | ANGLE="
-  );
-
   if (
-    badOrientationConfirmed
+    state ==
+      HOLDING
+    ||
+    state ==
+      HOLD_COMPLETE
+    ||
+    state ==
+      RESULT_SUCCESS
   ) {
 
     Serial.print(
-      "BAD"
+      " | DRIFT_R="
     );
-  }
-
-  else if (
-    badOrientationTiming
-  ) {
 
     Serial.print(
-      "CHECKING"
+      holdDR,
+      2
+    );
+
+
+    Serial.print(
+      " | DRIFT_P="
+    );
+
+    Serial.print(
+      holdDP,
+      2
+    );
+
+
+    Serial.print(
+      " | STABILITY="
+    );
+
+    Serial.print(
+      holdDriftWarning
+        ? "WARN"
+        : "GOOD"
     );
   }
+
 
   else {
 
     Serial.print(
-      "GOOD"
+      " | dR="
+    );
+
+    Serial.print(
+      preDR,
+      2
+    );
+
+
+    Serial.print(
+      " | dP="
+    );
+
+    Serial.print(
+      preDP,
+      2
     );
   }
 
 
-  // Plunger
   Serial.print(
     " | PLUNGER="
   );
 
   Serial.print(
     stablePlunger ==
-    LOW
+      LOW
       ? "DOWN"
       : "UP"
   );
 
 
-  // Hold
   Serial.print(
-    " | VALID_HOLD="
+    " | HOLD="
   );
 
   Serial.print(
-    getValidHoldSec(),
+    holdElapsedMs /
+    1000.0f,
     2
   );
 
-  Serial.print("/");
+  Serial.print(
+    "/"
+  );
 
   Serial.print(
-    HOLD_TARGET_SEC,
+    holdTargetMs /
+    1000.0f,
     1
   );
 
-  Serial.print("s");
+  Serial.print(
+    "s"
+  );
 
 
-  // Issue
   Serial.print(
     " | ISSUE="
   );
@@ -1717,7 +2264,6 @@ void setup() {
   );
 
 
-  // INPUT
   pinMode(
     FSR_PAD_PIN,
     INPUT
@@ -1734,7 +2280,6 @@ void setup() {
   );
 
 
-  // OUTPUT
   pinMode(
     VIBRATION_PIN,
     OUTPUT
@@ -1769,7 +2314,6 @@ void setup() {
   ledsOff();
 
 
-  // Plunger initial
   lastRawPlunger =
       digitalRead(
         PLUNGER_PIN
@@ -1779,7 +2323,6 @@ void setup() {
       lastRawPlunger;
 
 
-  // I2C
   Wire.begin(
     SDA_PIN,
     SCL_PIN
@@ -1793,15 +2336,15 @@ void setup() {
   Serial.println();
 
   Serial.println(
-    "========================================"
+    "======================================"
   );
 
   Serial.println(
-    "KOKCHI EMBEDDED STATE MACHINE TEST v2"
+    "KOKCHI STATE MACHINE TEST"
   );
 
   Serial.println(
-    "========================================"
+    "======================================"
   );
 
 
@@ -1820,7 +2363,6 @@ void setup() {
       "IMU INIT = ERROR"
     );
 
-
     while (true) {
 
       digitalWrite(
@@ -1833,7 +2375,9 @@ void setup() {
         LOW
       );
 
-      delay(1000);
+      delay(
+        1000
+      );
     }
   }
 
@@ -1841,30 +2385,12 @@ void setup() {
   Serial.println();
 
   Serial.println(
-    "FINAL PARAMETERS"
+    "PRE-INJECTION"
   );
 
 
   Serial.print(
-    "FSR_PAD_THRESHOLD = "
-  );
-
-  Serial.println(
-    FSR_PAD_THRESHOLD
-  );
-
-
-  Serial.print(
-    "FSR_PEN_THRESHOLD = "
-  );
-
-  Serial.println(
-    FSR_PEN_THRESHOLD
-  );
-
-
-  Serial.print(
-    "TARGET_ROLL = "
+    "TARGET ROLL  = "
   );
 
   Serial.println(
@@ -1874,7 +2400,7 @@ void setup() {
 
 
   Serial.print(
-    "TARGET_PITCH = "
+    "TARGET PITCH = "
   );
 
   Serial.println(
@@ -1884,31 +2410,88 @@ void setup() {
 
 
   Serial.print(
-    "ROLL_TOLERANCE = +/- "
+    "ROLL TOL     = +/- "
   );
 
-  Serial.println(
-    ROLL_TOLERANCE,
+  Serial.print(
+    PRE_ROLL_TOLERANCE,
     1
   );
 
-
-  Serial.print(
-    "PITCH_TOLERANCE = +/- "
+  Serial.println(
+    " deg"
   );
 
-  Serial.println(
-    PITCH_TOLERANCE,
+
+  Serial.print(
+    "PITCH TOL    = +/- "
+  );
+
+  Serial.print(
+    PRE_PITCH_TOLERANCE,
     1
   );
 
+  Serial.println(
+    " deg"
+  );
+
+
+  Serial.println();
+
+  Serial.println(
+    "DURING HOLD"
+  );
+
 
   Serial.print(
-    "BAD CONFIRM = "
+    "ROLL WARN    = +/- "
   );
 
   Serial.print(
-    BAD_ORIENTATION_CONFIRM_MS
+    HOLD_DRIFT_WARN_ROLL,
+    1
+  );
+
+  Serial.println(
+    " deg"
+  );
+
+
+  Serial.print(
+    "PITCH WARN   = +/- "
+  );
+
+  Serial.print(
+    HOLD_DRIFT_WARN_PITCH,
+    1
+  );
+
+  Serial.println(
+    " deg"
+  );
+
+
+  Serial.print(
+    "CLEAR RANGE  = +/- "
+  );
+
+  Serial.print(
+    HOLD_DRIFT_CLEAR_ROLL,
+    1
+  );
+
+  Serial.println(
+    " deg"
+  );
+
+
+  Serial.print(
+    "WARN CONFIRM = "
+  );
+
+  Serial.print(
+    HOLD_DRIFT_WARN_CONFIRM_MS
   );
 
   Serial.println(
@@ -1917,44 +2500,30 @@ void setup() {
 
 
   Serial.print(
-    "HOLD_TARGET = "
+    "CLEAR CONFIRM = "
   );
 
   Serial.print(
-    HOLD_TARGET_SEC,
-    1
+    HOLD_DRIFT_CLEAR_CONFIRM_MS
   );
 
   Serial.println(
-    " sec (DEMO)"
+    " ms"
   );
 
 
   Serial.println();
 
   Serial.println(
-    "COMMAND:"
+    "HOLD TARGET OPTIONS"
   );
 
   Serial.println(
-    "S = SITE SELECTED / START"
-  );
-
-  Serial.println(
-    "N = NEW SESSION"
+    "3 sec / 6 sec / 10 sec"
   );
 
 
-  Serial.println();
-
-  Serial.println(
-    "Waiting for S..."
-  );
-
-
-  setState(
-    WAIT_SITE
-  );
+  resetSession();
 }
 
 
@@ -1972,7 +2541,7 @@ void loop() {
       );
 
 
-  // 2. FSR
+  // 2. CONTACT
   fsrPadValue =
       analogRead(
         FSR_PAD_PIN
@@ -1988,33 +2557,31 @@ void loop() {
       fsrPadValue >=
       FSR_PAD_THRESHOLD;
 
-
   penContact =
       fsrPenValue >=
       FSR_PEN_THRESHOLD;
-
 
   contactConfirmed =
       padContact &&
       penContact;
 
 
-  // 3. Plunger
+  // 3. PLUNGER
   updatePlunger();
 
 
-  // 4. Feedback timer
+  // 4. OUTPUT TIMERS
   updateOutputs();
 
 
-  // 5. Serial
+  // 5. SERIAL CONTROL
   handleSerialCommands();
 
 
-  // 6. State Machine
+  // 6. STATE MACHINE
   updateStateMachine();
 
 
-  // 7. Status
+  // 7. DEBUG STATUS
   printStatus();
 }
