@@ -1,0 +1,19 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.tmp
+
+# Arduino / embedded build artifacts
+build/
+.build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Local logs / temporary exports
+*.log
+~$*

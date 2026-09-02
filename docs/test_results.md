@@ -1,78 +1,179 @@
-# InjectCoach Test Results
+# KOKCHI Test Results
 
-This document records quantitative and repeatability tests for the InjectCoach prototype.
+본 문서는 현재 개발완료보고서에서 사용할 수 있는 **실제 측정·검증 근거**만 정리한다. 의료 성능시험이 아니라 기능 프로토타입의 engineering validation 기록이다.
 
-## 1. ESP32
+## 1. ESP32 / Communication
 
-### Serial Communication
-Status: PASS
+| Test | Result |
+|---|---|
+| Serial upload / monitor | PASS |
+| ESP32 SoftAP | PASS |
+| Smartphone connection | PASS |
+| WebServer / HMI connection | PASS |
+| ESP32 status API integration | PASS |
 
-### SoftAP Wi-Fi
-Status: PASS
+## 2. FSR-PAD Calibration
 
----
+### No Contact, 10 trials
 
-## 2. Plunger Button
+```text
+0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+```
 
-### Press / Release Detection
-Status: PASS
+### Recorded Contact trials
 
-### Hold-Time Measurement
-Status: PASS
+```text
+3929, 3952, 4093, 4095, 4087,
+2682, 2459, 4090, 3621, 4090
+```
 
-Detailed repeated measurements: To be added.
+`2682`, `2459`는 접촉 적용과 측정 timing이 맞지 않았던 procedural invalid trial로 개발기록에 분리하였다.
 
----
+Valid Contact range:
 
-## 3. MPU6050
+```text
+3621–4095
+```
 
-### I2C Detection
-Address: `0x68`
+Final threshold:
 
-### Accelerometer / Gyroscope
-Status: PASS
+```cpp
+FSR_PAD_THRESHOLD = 2000;
+```
 
-### Roll / Pitch
-Status: PASS
+**Engineering decision:** multi-level pressure score가 아니라 **Contact / No Contact Gate**로 사용한다.
 
-### Repeatability Test
-To be added after rigid mounting and calibration.
+## 3. FSR-PEN Calibration
 
----
+### No Contact, 10 trials
 
-## 4. FSR-402
+```text
+0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+```
 
-### Contact Detection
-Status: PASS
+### Contact, 10 trials
 
-Observed ADC range:
-- No contact: approximately 0
-- Contact: increases substantially
-- Strong input may saturate near 4095
+```text
+3714, 3645, 3556, 3534, 3545,
+3184, 3193, 3608, 3622, 3724
+```
 
-### Pressure Classification
-Multi-level pressure classification is not currently used because overlapping ranges and ADC saturation were observed.
+Contact range:
 
-Final contact threshold: To be determined.
+```text
+3184–3724
+```
 
----
+Final threshold:
 
-## 5. Vibration Motor
+```cpp
+FSR_PEN_THRESHOLD = 1500;
+```
 
-Status: PASS
+**Engineering decision:** FSR-PEN 역시 정밀 힘(N) 측정이 아니라 Contact Gate로 사용한다.
 
-Influence on MPU6050 measurements: To be tested.
+## 4. MPU6050 Final Reference Pose
 
----
+최종 Grip / UP 방향을 고정한 상태의 3회 측정:
 
-## 6. Buzzer
+| Trial | Roll | Pitch |
+|---:|---:|---:|
+| 1 | -7.33° | 52.49° |
+| 2 | -8.10° | 53.28° |
+| 3 | -7.25° | 52.71° |
 
-Direct 3.3 V operation: PASS
+Mean:
 
-GPIO-controlled operation: Pending driver circuit.
+```cpp
+TARGET_ROLL  = -7.56f;
+TARGET_PITCH = 52.83f;
+```
 
----
+이 값은 현재 prototype의 Demo Profile reference이며 보편적인 의료 각도 기준이 아니다.
 
-## 7. End-to-End Test
+## 5. Vibration–IMU Interference
 
-Status: Pending
+실험 흐름:
+
+```text
+baseline 2 s
+→ vibration 70 ms
+→ recovery observation 1.5 s
+```
+
+관찰:
+
+- 70 ms vibration 중 accelerometer 기반 Roll/Pitch가 순간적으로 교란됨
+- 진동 종료 후 약 **180–200 ms**에서 baseline 근처로 회복
+
+Final engineering parameters:
+
+```cpp
+VIBRATION_MS = 70;
+IMU_SETTLE_MS = 250;
+```
+
+Firmware는 vibration 시작 후 `70 ms + 250 ms` 구간 동안 IMU 값을 orientation GOOD/BAD 판단에 사용하지 않는다.
+
+## 6. State Machine Parameters in Final Integrated Firmware
+
+```text
+Pre orientation tolerance     ±7.0° (Roll/Pitch)
+Pre bad confirm              350 ms
+Hold drift warning           > 6.0° for 250 ms
+Hold drift clear             ≤ 4.5° for 200 ms
+Buzzer                       350 ms
+Plunger debounce             30 ms
+Hold targets                 3 / 6 / 10 s
+```
+
+위 값은 final integrated firmware에 포함된 Demo Profile engineering parameter다.
+
+## 7. Functional State Validation
+
+확인된 핵심 흐름:
+
+- Contact Gate → `READY` / `ORIENTATION_CHECK`
+- pre-orientation error → Red + vibration
+- orientation recovery → Green
+- valid Plunger DOWN → HOLD reference capture + timer start
+- HOLD movement → Red warning, timer continues
+- HOLD stability recovery → Green
+- target hold reached → buzzer + `HOLD_COMPLETE`
+- target before Plunger release → `EARLY_RELEASE` → `RESULT_INTERRUPTED`
+- hold complete after release → `RESULT_SUCCESS`
+
+## 8. Rotation / Web Validation
+
+Final Web behavior:
+
+- site / sub-region selection
+- recent confirmed history comparison
+- session start / status polling / reset
+- success 후 실제 위치 Confirm/Correct
+- Confirm 이후에만 history 저장
+- interrupted session은 정상 완료 history로 저장하지 않음
+- `localStorage` persistence across browser reloads
+
+Parameters:
+
+```text
+recentWindow = 3
+maxHistory   = 10
+storage key  = kokchi_history_v1
+```
+
+## 9. Important Interpretation Boundary
+
+이 문서의 PASS와 수치는 다음을 의미한다.
+
+- 기능 구현 여부
+- 센서 입력의 prototype-level 분리 가능성
+- State Machine / physical feedback / Web integration 동작
+
+다음을 의미하지 않는다.
+
+- 임상적 정확도
+- 치료효과 향상
+- 합병증 예방
+- 실제 약물 투여 안전성
